@@ -20,15 +20,20 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-arm112}
       POSTGRES_USER: ${POSTGRES_USER:-arm112}
       PGPASSWORD: ${POSTGRES_PASSWORD:-change_me_now}
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-23}
     volumes:
       - ./deploy/backup/backup.sh:/backup.sh:ro
       - ./deploy/backup/start.sh:/start.sh:ro
+      - ./deploy/backup/health.sh:/health.sh:ro
+      - ./deploy/backup/verify.sh:/verify.sh:ro
+      - call_media:/backup-media:ro
+      - app_data:/backup-runtime:ro
       - ${BACKUP_DIR:-./backups}:/backups
     command: ["sh", "/start.sh"]
     depends_on:
       db: {condition: service_healthy}
     healthcheck:
-      test: ["CMD", "sh", "-c", "test -f /backups/latest.dump && pg_restore -l /backups/latest.dump >/dev/null"]
+      test: ["CMD", "sh", "/health.sh"]
       interval: 60s
       timeout: 5s
       retries: 3
@@ -62,7 +67,7 @@ services:
       - app_data:/app/data/runtime
       - sip_provision:/provision
       - call_media:/media
-      - ${BACKUP_DIR:-./backups}:/backups:ro
+      - ${BACKUP_DIR:-./backups}:/backups
     depends_on:
       db: {condition: service_healthy}
     restart: unless-stopped

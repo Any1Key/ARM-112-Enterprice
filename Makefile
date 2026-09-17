@@ -10,6 +10,8 @@ ai:
 	docker compose --profile ai up -d --build
 backup:
 	docker compose exec -T backup sh /backup.sh
+verify-backup:
+	docker compose exec -T backup sh /verify.sh
 restore:
 	@echo "See docs/OPERATIONS.md: custom-format pg_restore, stop app before restoring."
 
