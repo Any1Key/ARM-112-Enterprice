@@ -227,7 +227,11 @@ def lesson_progress(s,lesson,student_id):
     attempts=list(s.execute(select(SessionRun,RunContext).join(RunContext).where(
         RunContext.lesson_id==lesson.id,SessionRun.student_id==student_id
     ).order_by(SessionRun.id)))
-    latest={run.scenario_id:(run,context) for run,context in attempts}
+    latest={}
+    def priority(run):return 2 if not run.finished_at else (0 if (run.report or {}).get('skipped') else 1)
+    for run,context in attempts:
+        previous=latest.get(run.scenario_id)
+        if not previous or priority(run)>=priority(previous[0]):latest[run.scenario_id]=(run,context)
     scenarios={item.id:item for item in s.scalars(select(Scenario).where(Scenario.id.in_(lesson.scenario_ids)))}
     tasks=[]
     for identifier in dict.fromkeys(lesson.scenario_ids):
@@ -257,6 +261,10 @@ def begin_run(s,u,scenario,lesson=None):
         SessionRun.student_id==u.id,SessionRun.scenario_id==scenario.id,
         RunContext.lesson_id==lesson.id if lesson else RunContext.lesson_id.is_(None)
     ).order_by(SessionRun.id.desc()).with_for_update())
+    if lesson:
+        completed=s.scalars(select(SessionRun).join(RunContext).where(SessionRun.student_id==u.id,SessionRun.scenario_id==scenario.id,RunContext.lesson_id==lesson.id,SessionRun.finished_at.is_not(None)))
+        if any(not (run.report or {}).get('skipped') for run in completed):
+            raise HTTPException(409,'Задание этого занятия уже выполнено. Откройте результат; повторный запуск заблокирован.')
     if previous and previous.finished_at and (previous.report or {}).get('skipped'):
         context=s.get(RunContext,previous.id)
         resumed_at=now();saved_elapsed=previous.report['elapsed_seconds']

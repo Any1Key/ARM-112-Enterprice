@@ -52,6 +52,12 @@ def test_progress_separates_skips_and_resumes_them_after_new_tasks(client,monkey
     assert done['done'] and done['all_completed']
     assert client.get('/api/active-run',headers=student).json() is None
     assert client.post(f'/api/lessons/{identifier}/tasks/{scenarios[0]}/start',headers=student).status_code==409
+    assert client.post(f'/api/runs/{scenarios[0]}/start',headers=student).status_code==409
+    with main.SessionLocal() as s:assert s.query(SessionRun).filter_by(student_id=3).count()==3
+    new_lesson=lesson(client,teacher,[scenarios[0]],'Повторная практика по назначению')
+    assigned_again=client.post(f'/api/runs/{scenarios[0]}/start',headers=student)
+    assert assigned_again.status_code==200 and assigned_again.json()['lesson_id']==new_lesson
+    assert assigned_again.json()['run_id']!=first['run_id']
 
 
 def test_other_lesson_cannot_report_done_or_open_a_second_active_card(client):

@@ -273,7 +273,13 @@ def start_run(scenario_id:int,u=Depends(current),s:Session=Depends(db)):
         return run_payload(s,active,context)
     setting=s.get(ScenarioSettings,scenario_id)
     if setting and setting.mode=='dispatch': raise HTTPException(409,'Задание ДДС запускается преподавателем через занятие')
-    lesson=next((lesson for lesson in s.scalars(select(Lesson).where(Lesson.status=='active')) if u.id in lesson.student_ids and sc.id in lesson.scenario_ids),None)
+    matching=[item for item in s.scalars(select(Lesson).where(Lesson.status=='active').order_by(Lesson.id.desc())) if u.id in item.student_ids and sc.id in item.scenario_ids]
+    lesson=None
+    for item in matching:
+        completed=s.scalars(select(SessionRun).join(RunContext).where(SessionRun.student_id==u.id,SessionRun.scenario_id==sc.id,RunContext.lesson_id==item.id,SessionRun.finished_at.is_not(None)))
+        if not any(not (run.report or {}).get('skipped') for run in completed):
+            lesson=item;break
+    if matching and not lesson:raise HTTPException(409,'Задание уже выполнено на назначенных занятиях. Откройте результат; повторный запуск заблокирован.')
     run,context=begin_run(s,u,sc,lesson)
     from app.workflows import run_payload
     return run_payload(s,run,context)

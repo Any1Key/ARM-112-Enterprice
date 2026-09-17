@@ -27,6 +27,16 @@ const assert=require('node:assert/strict');const path=require('node:path');
   await row(first,b).getByRole('button',{name:'Начать',exact:true}).click();await student.waitForFunction(()=>state.runId&&!state.busy);
   async function finish(){await student.locator('#description').fill('Слышны крики, нужна полиция');await student.locator('#incident').fill('Нарушение общественного порядка');await student.locator('#address').fill('город Тула, улица Советская, дом 24');await student.locator('#finish-button').click();await student.waitForFunction(()=>!state.runId&&!state.busy);}
   await finish();assert.equal(await row(first,b).getAttribute('data-task-status'),'completed');
+  assert(await student.locator('#result').getByRole('button',{name:'Задание выполнено',exact:true}).isDisabled());
+  await student.evaluate(()=>document.querySelector('.scenario-panel').classList.remove('collapsed'));
+  await student.locator('#scenario-search').fill('Задание 2');
+  const completedScenario=student.locator(`#scenarios [data-scenario-id="${b}"]`);
+  assert((await completedScenario.innerText()).includes('✓ Выполнено'));
+  assert(await completedScenario.getByRole('button',{name:'Выполнено',exact:true}).isDisabled());
+  const blockedRepeat=await student.evaluate(async id=>{const r=await fetch(`/api/runs/${id}/start`,{method:'POST',headers:{Authorization:'Bearer '+state.token}});return r.status;},b);assert.equal(blockedRepeat,409);
+  await student.evaluate(id=>choose(state.scenarios.find(s=>s.id===id)),b);assert(await student.locator('#call').isHidden());
+  await completedScenario.getByRole('button',{name:'Результат',exact:true}).click();await student.locator('#report-detail .report-heading h2').waitFor();
+  await student.evaluate(()=>switchView('training'));await student.locator('#scenario-search').fill('');
   await row(first,b).getByRole('button',{name:'Результат',exact:true}).click();await student.locator('#report-detail .report-heading h2').waitFor();await student.evaluate(()=>switchView('training'));
   await row(first,c).getByRole('button',{name:'Начать',exact:true}).click();await student.waitForFunction(()=>state.runId&&!state.busy);
   await row(first,c).locator('.lesson-task-status.in_progress').waitFor();
@@ -39,6 +49,6 @@ const assert=require('node:assert/strict');const path=require('node:path');
   await student.evaluate(id=>nextLesson(id),first);assert(await student.locator('#incident-form').isHidden());assert(await student.evaluate(()=>state.runId===null&&state.startedAt===null));
   const timer=await student.locator('#timer').textContent();await student.waitForTimeout(1200);assert.equal(await student.locator('#timer').textContent(),timer);
   await lesson(second).locator('.lesson-progress-heading button').click();await student.waitForFunction(()=>state.runId&&!state.busy);await finish();assert((await lesson(second).innerText()).includes('Все задания выполнены'));
-  assert.deepEqual(errors,[]);console.log('Lesson tasks: all four statuses, cross-lesson guard, preserved skip/resume time and answers, own report, stopped completion timer, open dropdown and mobile PASS');
+  assert.deepEqual(errors,[]);console.log('Lesson tasks: all four statuses, cross-lesson guard, preserved skip/resume time and answers, own report, stopped completion timer, completed scenario badge/search, blocked UI/API repeat, open dropdown and mobile PASS');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1});

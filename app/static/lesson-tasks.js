@@ -54,3 +54,38 @@ nextLesson=async function(identifier){
  switchView('training');show('result',true);$('result').replaceChildren(el('h2','','Все задания занятия выполнены'),el('p','','Таймер остановлен. Результаты сохранены; дождитесь разбора преподавателя.'));
  $('incident-title').textContent=state.lessons.find(l=>l.id===identifier)?.title||'Занятие';$('run-badge').textContent='Ожидание разбора';await loadLessons();renderMetrics();notify('Все задания занятия выполнены. Дождитесь разбора преподавателя.');
 };
+
+// Make progress visible in the scenario list as well as inside the lesson dropdown.
+function scenarioLessonTask(scenarioId){
+ const assigned=(state.lessons||[]).flatMap(lesson=>(lesson.tasks||[]).filter(task=>task.scenario_id===scenarioId).map(task=>({lesson,task})));
+ const active=assigned.filter(item=>item.lesson.status==='active');
+ return active.find(item=>item.task.status==='in_progress')||active.find(item=>item.task.status==='pending'||item.task.status==='skipped')||active[0]||assigned[0];
+}
+const renderScenariosBeforeTaskStatus=renderScenarios;
+renderScenarios=function(){
+ if(state.role!=='student')return renderScenariosBeforeTaskStatus();
+ const query=$('scenario-search').value.toLocaleLowerCase();const target=$('scenarios');target.replaceChildren();
+ const list=state.scenarios.filter(s=>(s.title+' '+s.category).toLocaleLowerCase().includes(query));
+ if(!list.length){target.append(el('p','empty-table','Сценарии не найдены'));return;}
+ for(const scenario of list){
+  const item=scenarioLessonTask(scenario.id);const completed=item?.task.status==='completed';
+  const card=el('div',`scenario scenario-task${completed?' completed':''}${state.selected?.id===scenario.id?' active':''}`);card.dataset.scenarioId=scenario.id;
+  const top=el('div','scenario-top');top.append(el('span','category-tag',scenario.category),el('span','scenario-number',`#${String(scenario.id).padStart(3,'0')}`));card.append(top,el('b','',scenario.title.replace(/^Учебный вызов:\s*/i,'')));
+  if(item){card.append(el('span',`lesson-task-status ${item.task.status}`,`${completed?'✓ ':''}${lessonTaskLabels[item.task.status]}`),el('small','',`Занятие: ${item.lesson.title}`));}
+  else card.append(el('small','','Самостоятельная практика'));
+  const actions=el('div','scenario-task-actions');const start=el('button','secondary',completed?'Выполнено':item?.task.status==='skipped'?'Продолжить':item?.task.status==='in_progress'?'Открыть':'Начать');start.type='button';
+  start.disabled=completed||Boolean(item&&item.lesson.status!=='active')||Boolean(state.runId&&state.runId!==item?.task.run_id);
+  start.addEventListener('click',guarded(async()=>{if(state.busy)return;if(item)await startLessonTask(item.lesson.id,scenario.id);else choose(scenario);}));actions.append(start);
+  if(completed){const result=el('button','secondary','Результат');result.type='button';result.addEventListener('click',guarded(async()=>{if(state.busy)return;switchView('reports');await openReportDetail(item.task.run_id);}));actions.append(result);card.append(el('small','scenario-completed-note','Обработка завершена · повторный запуск заблокирован'));}
+  card.append(actions);target.append(card);
+ }
+};
+const chooseBeforeCompletedGuard=choose;
+choose=function(scenario){const item=state.role==='student'?scenarioLessonTask(scenario.id):null;if(item?.task.status==='completed'){notify('Задание уже выполнено. Откройте «Результат» в списке заданий или сценариев.');return;}chooseBeforeCompletedGuard(scenario);};
+const renderResultBeforeCompletedGuard=renderResult;
+renderResult=function(container,report,actions=false){renderResultBeforeCompletedGuard(container,report,actions);if(state.role==='student'&&!report.skipped&&(state.lessons||[]).some(lesson=>(lesson.tasks||[]).some(task=>task.run_id===report.run_id))){for(const button of container.querySelectorAll('.result-actions button'))if(button.textContent.includes('Повторить тренировку')){button.disabled=true;button.textContent='Задание выполнено';button.title='Повторный запуск в этом занятии заблокирован';}}};
+const renderAssignedBeforeScenarioStatus=renderAssignedLessons;
+renderAssignedLessons=function(){renderAssignedBeforeScenarioStatus();if(state.role==='student')renderScenarios();};
+
+$('scenario-search').removeEventListener('input',renderScenariosBeforeTaskStatus);
+$('scenario-search').addEventListener('input',renderScenarios);
