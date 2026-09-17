@@ -9,3 +9,5 @@ backups/
 .codex/
 *:Zone.Identifier
 .github-auth/
+
+node_modules/

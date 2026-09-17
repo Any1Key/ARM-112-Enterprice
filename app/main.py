@@ -37,6 +37,10 @@ class ExpectedIn(BaseModel):
     caller_phone: str = Field(default='',max_length=100)
     aon: str = Field(default='',max_length=100)
     on_site_phone: str = Field(default='',max_length=100)
+    empty_contact: bool = False
+    questionnaire_answers: dict[str,dict] = Field(default_factory=dict,max_length=10)
+    victims_count: int | None = Field(default=None,ge=0,le=100000)
+    caller_status: str = Field(default='',max_length=100)
     victims: bool = False
     access_blocked: bool = False
     life_danger: bool = False
@@ -69,6 +73,9 @@ def audit(s,u,action,details=None): s.add(Audit(user_id=u.id if u else None,acti
 def words(x): return set(re.findall(r'[а-яёa-z0-9]+',x.lower()))
 def evaluate(sc:Scenario,a:FinishIn,elapsed:int):
     e=sc.expected or {}; parts={};
+    if e.get('empty_contact'):
+        correct=(a.no_contact or a.call_lost) and not a.classifier_ids and not a.description.strip() and not a.services
+        return {'score':100 if correct else 0,'parts':{'Обработка вызова без контакта':100 if correct else 0},'parts_max':{'Обработка вызова без контакта':100},'elapsed_seconds':elapsed,'norm_seconds':e.get('norm_seconds',30),'errors':[] if correct else ['Необходимо оформить пустую карточку без вымышленных сведений и отметить отсутствие контакта / срыв звонка.'],'note':'Учебная проверка оформления вызова без контакта.'}
     parts['Тип происшествия']=20 if a.incident_type.strip().lower()==str(e.get('incident_type','')).strip().lower() else 0
     if e.get('classifier_ids'): parts['Тип происшествия']=20 if set(e['classifier_ids'])==set(a.classifier_ids+([a.classifier_id] if a.classifier_id else [])) else 0
     exp_addr=words(str(e.get('address',''))); got_addr=words(a.address); parts['Адрес']=10 if (exp_addr and len(exp_addr&got_addr)/len(exp_addr)>=.6) or (not exp_addr and not got_addr) else 0
@@ -84,7 +91,9 @@ def evaluate(sc:Scenario,a:FinishIn,elapsed:int):
     if parts['Время']<20: errors.append('Превышен норматив обработки вызова.')
     score=sum(parts.values()); report={'score':score,'errors':errors,'parts':parts,'elapsed_seconds':elapsed,'norm_seconds':norm,'text_overlap':round(sim,2),'note':'Первичная оценка рассчитана по правилам и совпадению ключевых слов. Обсудите ошибки с преподавателем; оценка не заменяет экспертный разбор.'}
     from app.ml import apply_neural
-    return apply_neural(report,str(e.get('operator_comment','')),a.operator_comment+' '+a.description,'Смысл текста',30)
+    apply_neural(report,str(e.get('operator_comment','')),a.operator_comment+' '+a.description,'Смысл текста',30)
+    from app.questionnaires import grade_answers
+    return grade_answers(report,e,a)
 
 def seed(s):
     if not s.scalar(select(User).limit(1)):
@@ -103,6 +112,8 @@ def seed(s):
         s.commit()
 
 app=FastAPI(title='АРМ-112 Учебный тренажёр',version='0.1.0')
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware,minimum_size=1000)
 app.mount('/static',StaticFiles(directory='app/static'),name='static'); templates=Jinja2Templates(directory='app/templates')
 @app.on_event('startup')
 def startup():
@@ -133,6 +144,10 @@ def delete_run_data(s,run_id,remove_recording=True):
     for item in s.scalars(select(CardAttachment).where(CardAttachment.run_id==run_id)).all():
         try:(ATTACHMENT_ROOT/item.stored_name).unlink(missing_ok=True)
         except OSError:pass
+    from app.models import TrainingMessage
+    s.query(TrainingMessage).filter(TrainingMessage.run_id==run_id).delete(synchronize_session=False)
+    for linked in s.scalars(select(RunContext)):
+        if linked.scenario_snapshot.get('parent_run_id')==run_id:linked.scenario_snapshot={**linked.scenario_snapshot,'parent_run_id':None}
     s.query(CardAttachment).filter(CardAttachment.run_id==run_id).delete(synchronize_session=False)
     s.query(CardEvent).filter(CardEvent.run_id==run_id).delete(synchronize_session=False)
     s.query(ExpertReview).filter(ExpertReview.run_id==run_id).delete(synchronize_session=False)
@@ -323,3 +338,6 @@ from app.generation import register_generation
 register_generation(app,db,current,SessionLocal)
 from app.operations import register_operations
 register_operations(app,db,current)
+
+from app.card_extensions import register_extensions
+register_extensions(app,db,current)

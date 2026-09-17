@@ -1,5 +1,5 @@
 from typing import Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 class CardIn(BaseModel):
     incident_type: str = Field(default='',max_length=3000)
@@ -43,6 +43,11 @@ class CardIn(BaseModel):
     access_blocked: bool = False
     life_danger: bool = False
     flags: dict[str,bool] = Field(default_factory=dict,max_length=30)
+    victims_count: int | None = Field(default=None,ge=0,le=100000)
+    foreign_language: bool = False
+    questionnaire_answers: dict[str,dict] = Field(default_factory=dict,max_length=10)
+    excluded_services: list[str] = Field(default_factory=list,max_length=100)
+    service_override_reason: str = Field(default='',max_length=1000)
     questionnaire: str = Field(default='',max_length=5000)
 
 class DraftIn(BaseModel):
@@ -75,11 +80,20 @@ class StatusIn(BaseModel):
     unit_number: str = Field(default='',max_length=100)
 
 class WorkCallIn(BaseModel):
-    service: str = Field(min_length=1,max_length=200)
+    service: str = Field(default='',max_length=200)
     destination: str = Field(default='',max_length=300)
     phone: str = Field(default='',max_length=100)
     receiver: str = Field(default='',max_length=200)
-    message: str = Field(min_length=1,max_length=3000)
+    message: str = Field(default='',max_length=3000)
+
+    @model_validator(mode='after')
+    def nonempty(self):
+        if not any(str(v).strip() for v in self.model_dump().values()): raise ValueError('Заполните хотя бы одно поле отработки')
+        return self
+
+class SupplementIn(BaseModel):
+    revision: int = Field(ge=0)
+    fields: dict = Field(max_length=30)
 
 class ReviewIn(BaseModel):
     score: int = Field(ge=0,le=100)

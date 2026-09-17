@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from app.classifier import FLAGS, parse_workbook, resolve_rules
+from app.classifier import active_workbook, FLAGS, parse_workbook, resolve_rules
 from app.generation import generate_local, draft_issues, ScenarioDraft, material_facts
 from app.scenario_profiles import manifest, build_profile, case_contexts, no_victims, object_name
 from test_health import client, auth
@@ -18,7 +18,7 @@ def topic(code):
 
 
 def test_catalog_matches_every_row_of_current_workbook():
-    path=next(Path('source_materials').glob('*.xlsx'))
+    path=active_workbook()
     original=parse_workbook(path)
     stored=json.loads(Path('app/ekp_generation_manifest.json').read_text())
     assert stored['source_sha256']==hashlib.sha256(path.read_bytes()).hexdigest()
@@ -109,7 +109,7 @@ def test_critical_distinctions_in_every_authored_case(monkeypatch,code,required,
 
 @pytest.mark.parametrize('code',['1010101','1050102','3010100','5010100'])
 def test_optional_injuries_are_explicit_and_change_dispatch(monkeypatch,code):
-    original=parse_workbook(next(Path('source_materials').glob('*.xlsx')))
+    original=parse_workbook(active_workbook())
     row=next(x for x in original['items'] if x['code']==code)
     from app.generation import varied_choice
     for context in case_contexts(build_profile(row)):

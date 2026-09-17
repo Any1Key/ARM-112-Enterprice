@@ -67,6 +67,7 @@ services:
       db: {condition: service_healthy}
     restart: unless-stopped
   asterisk:
+    hostname: arm112-asterisk
     build: ./deploy/asterisk
     profiles: ["voip"]
     environment:
@@ -86,7 +87,7 @@ services:
     environment:
       TURN_SECRET: ${TURN_SECRET:-arm112-local-turn-change-me}
     entrypoint: ["/bin/sh", "-c"]
-    command: ['exec turnserver --no-cli --no-tls --no-dtls --fingerprint --lt-cred-mech --use-auth-secret --static-auth-secret="$$TURN_SECRET" --realm=arm112.local --listening-port=3478 --min-port=49160 --max-port=49200 --log-file=stdout']
+    command: ['exec turnserver --no-cli --no-tls --no-dtls --fingerprint --lt-cred-mech --use-auth-secret --static-auth-secret="$$TURN_SECRET" --realm=arm112.local --listening-port=3478 --min-port=49160 --max-port=49559 --log-file=stdout']
     ports: ["3478:3478", "3478:3478/udp"]
     restart: unless-stopped
   voice:

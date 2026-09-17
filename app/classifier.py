@@ -43,6 +43,15 @@ SERVICE_NAMES = {
     'TERRITORY': 'Территориальные ОИВ', 'TINAO': 'Территориальные ОИВ ТиНАО',
 }
 
+ACTIVE_CLASSIFIER = 'Классификатор_происшествий_v_046_24_корректировка_МВД_+_Департамент.xlsx'
+def active_workbook(root='source_materials'):
+    import os
+    name = os.getenv('CLASSIFIER_FILE', ACTIVE_CLASSIFIER)
+    if Path(name).name != name: raise ValueError('CLASSIFIER_FILE должен содержать только имя файла')
+    path = Path(root) / name
+    if not path.is_file(): raise ValueError(f'Активный классификатор не найден: {name}')
+    return path
+
 def clean(value):
     return re.sub(r'\s+', ' ', str(value)).strip() if value is not None else ''
 
@@ -64,8 +73,8 @@ def parse_workbook(path):
     path = Path(path)
     workbook = load_workbook(path, data_only=True)
     sheet = workbook.active
-    if sheet.max_column != 99 or clean(sheet.cell(2,11).value) != 'Итоговый тип происшествия':
-        raise ValueError('Структура XLSX не соответствует поддерживаемой версии ЕКП (99 колонок).')
+    if sheet.max_column not in (90,99) or clean(sheet.cell(2,11).value) != 'Итоговый тип происшествия':
+        raise ValueError('Структура XLSX не соответствует поддерживаемым версиям ЕКП (90/99 колонок).')
     merged = {}
     for area in sheet.merged_cells.ranges:
         if area.min_row <= 3:
@@ -74,11 +83,14 @@ def parse_workbook(path):
                     merged[row,col] = sheet.cell(area.min_row,area.min_col).value
     def header(row,col): return clean(merged.get((row,col), sheet.cell(row,col).value))
     columns = []
-    for col in range(14,100):
-        code = service_code(col)
+    legacy90=sheet.max_column==90
+    if legacy90 and clean(sheet.cell(1,13).value)!='Сценарий реагирования':raise ValueError('Неподдерживаемая структура 90-колоночного ЕКП')
+    for col in range(15 if legacy90 else 14,sheet.max_column+1):
+        canonical=col-1 if legacy90 and col<=87 else col
+        code = service_code(canonical)
         name = SERVICE_NAMES.get(code, header(1,col))
         columns.append({'column':col,'code':code,'name':name,'headers':[header(r,col) for r in (1,2,3)],
-                        'condition':CONDITIONS.get(col, ('always', [])), 'visible':col!=58})
+                        'condition':CONDITIONS.get(canonical, ('always', [])), 'visible':canonical!=58})
     section_names = {}
     for row in sheet.iter_rows(min_row=4,values_only=True):
         if row[4] is not None and not row[10] and row[5]: section_names[int(row[4])] = clean(row[5])
@@ -94,7 +106,7 @@ def parse_workbook(path):
                  if clean(row[column['column']-1])]
         items.append({'code':code,'group_code':str(row[0]),'category':section_names.get(row[0],f'Группа {row[0]}'),
                       'features':[clean(row[i]) for i in (6,7,8)], 'extra_questions':clean(row[9]),
-                      'title':clean(row[10]),'legacy_title':clean(row[11]),'main_service':clean(row[12]),
+                      'title':clean(row[10]),'legacy_title':clean(row[11]),'main_service':clean(row[13] if legacy90 else row[12]),'reaction_scenario':clean(row[12]) if legacy90 else '',
                       'source_row':number,'rules':rules,'raw':[v.isoformat() if hasattr(v,'isoformat') else v for v in row]})
     if not items: raise ValueError('В XLSX нет итоговых типов происшествия')
     workbook.close()

@@ -1,0 +1,485 @@
+{
+  "version": 1,
+  "cards": [
+    {
+      "key": "workflow-dds",
+      "title": "ДДС · пожар · от принятия до завершения",
+      "category": "Пожары и задымления",
+      "caller_text": "Дым в квартире на четвёртом этаже. Людей вывели. Требуется проверить квартиру и вентиляцию.",
+      "expected": {
+        "incident_type": "задымление: квартира",
+        "address": "город Тула, улица Советская, дом 24",
+        "services": [
+          "101",
+          "102",
+          "MOSOBLGAZ",
+          "GORHOZ",
+          "EKP54",
+          "EKP55",
+          "MOSBEZ",
+          "MOSBEZ_ANALYTICS",
+          "EKP59",
+          "EKP70",
+          "TERRITORY",
+          "TINAO",
+          "EKP81",
+          "EKP84",
+          "EKP89",
+          "EKP91"
+        ],
+        "operator_comment": "Дым в квартире на четвёртом этаже. Людей вывели. Требуется проверить квартиру и вентиляцию.",
+        "norm_seconds": 180,
+        "caller_name": "Орлова Анна Викторовна",
+        "aon": "+7 921 555 18 42",
+        "caller_phone": "",
+        "flags": {
+          "victims": false
+        },
+        "empty_contact": false,
+        "questionnaire_answers": {
+          "1": {
+            "feature_0": "жилой дом",
+            "feature_1": "квартира",
+            "feature_2": "дым"
+          }
+        },
+        "victims": false,
+        "life_danger": false,
+        "access_blocked": false,
+        "service_status": "Работы завершены"
+      },
+      "classifier_codes": [
+        "1050102"
+      ],
+      "difficulty": "advanced",
+      "mode": "dispatch",
+      "published": true,
+      "initial_card": {
+        "incident_type": "задымление: квартира",
+        "address": "город Тула, улица Советская, дом 24",
+        "description": "Дым в квартире на четвёртом этаже. Людей вывели. Требуется проверить квартиру и вентиляцию.",
+        "services": [
+          "101",
+          "102",
+          "MOSOBLGAZ",
+          "GORHOZ",
+          "EKP54",
+          "EKP55",
+          "MOSBEZ",
+          "MOSBEZ_ANALYTICS",
+          "EKP59",
+          "EKP70",
+          "TERRITORY",
+          "TINAO",
+          "EKP81",
+          "EKP84",
+          "EKP89",
+          "EKP91"
+        ],
+        "source_system": "Служба 112",
+        "flags": {
+          "victims": false
+        }
+      },
+      "generation": {
+        "method": "reviewed-source-workflow",
+        "source": "Инструкция по заведению карточки; скриншоты 112/ДДС",
+        "version": "2026-09-17"
+      }
+    },
+    {
+      "key": "workflow-fire",
+      "title": "112 · пожар · несколько объектов и пострадавшие",
+      "category": "Пожары и задымления",
+      "caller_text": "Меня зовут Орлова Анна Викторовна. В девятиэтажном доме дым из квартиры на четвёртом этаже, дым уже в подъезде. Два человека кашляют, один не может выйти. Адрес: город Тула, улица Советская, дом 24, квартира 18. Проезд свободен. Не знаю, проведён ли газ. Можно перезвонить на номер, с которого звоню.",
+      "expected": {
+        "incident_type": "задымление: квартира",
+        "address": "город Тула, улица Советская, дом 24, квартира 18",
+        "services": [
+          "101",
+          "103",
+          "CEMP",
+          "MOSOBLGAZ",
+          "GORHOZ",
+          "EKP54",
+          "EKP55",
+          "MOSBEZ",
+          "MOSBEZ_ANALYTICS",
+          "EKP59",
+          "EKP70",
+          "TERRITORY",
+          "TINAO",
+          "EKP81",
+          "EKP84",
+          "EKP89",
+          "EKP91"
+        ],
+        "operator_comment": "Меня зовут Орлова Анна Викторовна. В девятиэтажном доме дым из квартиры на четвёртом этаже, дым уже в подъезде. Два человека кашляют, один не может выйти. Адрес: город Тула, улица Советская, дом 24, квартира 18. Проезд свободен. Не знаю, проведён ли газ. Можно перезвонить на номер, с которого звоню.",
+        "norm_seconds": 180,
+        "caller_name": "Орлова Анна Викторовна",
+        "aon": "+7 921 555 18 42",
+        "caller_phone": "",
+        "flags": {
+          "victims": true,
+          "life_danger": true,
+          "traffic_blocked": false
+        },
+        "empty_contact": false,
+        "questionnaire_answers": {
+          "1": {
+            "feature_0": "жилой дом",
+            "feature_1": "квартира",
+            "feature_2": "дым",
+            "victims": "yes",
+            "life_danger": "yes",
+            "building_floors": 9,
+            "fire_floor": 4,
+            "fire_objects": [
+              "квартира",
+              "подъезд"
+            ],
+            "gasified": "unknown",
+            "traffic_blocked": "no"
+          }
+        },
+        "victims": true,
+        "life_danger": true,
+        "access_blocked": false,
+        "victims_count": 2
+      },
+      "classifier_codes": [
+        "1050102"
+      ],
+      "difficulty": "advanced",
+      "mode": "call",
+      "published": true,
+      "initial_card": {},
+      "generation": {
+        "method": "reviewed-source-workflow",
+        "source": "Инструкция по заведению карточки; скриншоты 112/ДДС",
+        "version": "2026-09-17"
+      }
+    },
+    {
+      "key": "workflow-gas",
+      "title": "112 · запах газа · неизвестные сведения",
+      "category": "Запах газа",
+      "caller_text": "Я Орлова Анна Викторовна. В квартире сильно пахнет газом. Город Казань, улица Чистопольская, дом 36, квартира 12. Огня не вижу. Я вышла на улицу. Есть ли люди у соседей, не знаю. Отдельного номера для обратной связи нет.",
+      "expected": {
+        "incident_type": "Запах бытового газа в квартире",
+        "address": "город Казань, улица Чистопольская, дом 36, квартира 12",
+        "services": [
+          "101",
+          "CEMP",
+          "MOSOBLGAZ",
+          "EKP59",
+          "TERRITORY",
+          "TINAO",
+          "EKP84",
+          "EKP85"
+        ],
+        "operator_comment": "Я Орлова Анна Викторовна. В квартире сильно пахнет газом. Город Казань, улица Чистопольская, дом 36, квартира 12. Огня не вижу. Я вышла на улицу. Есть ли люди у соседей, не знаю. Отдельного номера для обратной связи нет.",
+        "norm_seconds": 180,
+        "caller_name": "Орлова Анна Викторовна",
+        "aon": "+7 921 555 18 42",
+        "caller_phone": "",
+        "flags": {
+          "gasified": true
+        },
+        "empty_contact": false,
+        "questionnaire_answers": {
+          "13": {
+            "feature_0": "Запах газа в помещении",
+            "feature_1": "Квартира помещение",
+            "feature_2": "Открыто",
+            "gasified": "yes",
+            "life_danger": "unknown",
+            "victims": "unknown"
+          }
+        },
+        "victims": false,
+        "life_danger": false,
+        "access_blocked": false
+      },
+      "classifier_codes": [
+        "13020201"
+      ],
+      "difficulty": "advanced",
+      "mode": "call",
+      "published": true,
+      "initial_card": {},
+      "generation": {
+        "method": "reviewed-source-workflow",
+        "source": "Инструкция по заведению карточки; скриншоты 112/ДДС",
+        "version": "2026-09-17"
+      }
+    },
+    {
+      "key": "workflow-explosion",
+      "title": "112 · взрыв · только наблюдаемые разрушения",
+      "category": "Взрывы",
+      "caller_text": "Меня зовут Орлова Анна Викторовна. У жилого дома раздался взрыв, вылетели стёкла двух окон. Город Пермь, улица Ленина, дом 44. Огонь не вижу, причину не знаю. Опасность обрушения определить не могу. Число пострадавших неизвестно.",
+      "expected": {
+        "incident_type": "Взрыв жилое здание",
+        "address": "город Пермь, улица Ленина, дом 44",
+        "services": [
+          "101",
+          "PSC",
+          "102",
+          "103",
+          "104",
+          "FSB",
+          "MOSOBLGAZ",
+          "GORHOZ",
+          "EKP50",
+          "EKP53",
+          "EKP55",
+          "MOSBEZ",
+          "MOSBEZ_ANALYTICS",
+          "EKP59",
+          "EKP65",
+          "EKP74",
+          "TERRITORY",
+          "TINAO",
+          "EKP78",
+          "EKP81",
+          "EKP84",
+          "EKP85",
+          "EKP89",
+          "EKP91",
+          "EKP99"
+        ],
+        "operator_comment": "Меня зовут Орлова Анна Викторовна. У жилого дома раздался взрыв, вылетели стёкла двух окон. Город Пермь, улица Ленина, дом 44. Огонь не вижу, причину не знаю. Опасность обрушения определить не могу. Число пострадавших неизвестно.",
+        "norm_seconds": 180,
+        "caller_name": "Орлова Анна Викторовна",
+        "aon": "+7 921 555 18 42",
+        "caller_phone": "",
+        "flags": {},
+        "empty_contact": false,
+        "questionnaire_answers": {
+          "3": {
+            "feature_0": "Взрыв объект",
+            "feature_1": "Дом многоквартирный",
+            "ignition": "no",
+            "collapse_threat": "unknown",
+            "damage": "Вылетели стёкла двух окон",
+            "victims": "unknown"
+          }
+        },
+        "victims": false,
+        "life_danger": false,
+        "access_blocked": false
+      },
+      "classifier_codes": [
+        "3010100"
+      ],
+      "difficulty": "advanced",
+      "mode": "call",
+      "published": true,
+      "initial_card": {},
+      "generation": {
+        "method": "reviewed-source-workflow",
+        "source": "Инструкция по заведению карточки; скриншоты 112/ДДС",
+        "version": "2026-09-17"
+      }
+    },
+    {
+      "key": "workflow-metro",
+      "title": "112 · метро · станция вместо улицы и дома",
+      "category": "Запах газа",
+      "caller_text": "Орлова Анна Викторовна. В Москве на станции метро Таганская на платформе ощущается запах газа. Я отошла к эскалатору. Открытого огня не вижу. Других сведений пока нет.",
+      "expected": {
+        "incident_type": "Запах бытового газа в метро (тоннеле)",
+        "address": "город Москва, станция метро Таганская, платформа",
+        "services": [
+          "101",
+          "PSC",
+          "102",
+          "104",
+          "MOSOBLGAZ",
+          "EKP49",
+          "EKP55",
+          "EKP59",
+          "TERRITORY",
+          "TINAO",
+          "EKP84",
+          "EKP85",
+          "EKP91"
+        ],
+        "operator_comment": "Орлова Анна Викторовна. В Москве на станции метро Таганская на платформе ощущается запах газа. Я отошла к эскалатору. Открытого огня не вижу. Других сведений пока нет.",
+        "norm_seconds": 180,
+        "caller_name": "Орлова Анна Викторовна",
+        "aon": "+7 921 555 18 42",
+        "caller_phone": "",
+        "flags": {},
+        "empty_contact": false,
+        "questionnaire_answers": {
+          "13": {
+            "feature_0": "Запах газа на улице",
+            "feature_1": "Метро (тоннель)",
+            "victims": "unknown"
+          }
+        },
+        "victims": false,
+        "life_danger": false,
+        "access_blocked": false
+      },
+      "classifier_codes": [
+        "13010200"
+      ],
+      "difficulty": "advanced",
+      "mode": "call",
+      "published": true,
+      "initial_card": {},
+      "generation": {
+        "method": "reviewed-source-workflow",
+        "source": "Инструкция по заведению карточки; скриншоты 112/ДДС",
+        "version": "2026-09-17"
+      }
+    },
+    {
+      "key": "workflow-repeat",
+      "title": "112 · повторное сообщение · связь карточек",
+      "category": "Пожары и задымления",
+      "caller_text": "Орлова Анна Викторовна. Я уже сообщала о дыме по адресу: город Тула, улица Советская, дом 24, квартира 18. Теперь дым виден на лестнице. Сколько людей осталось внутри, не знаю. Звоню с того же номера.",
+      "expected": {
+        "incident_type": "задымление: квартира",
+        "address": "город Тула, улица Советская, дом 24, квартира 18",
+        "services": [
+          "101",
+          "102",
+          "MOSOBLGAZ",
+          "GORHOZ",
+          "EKP54",
+          "EKP55",
+          "MOSBEZ",
+          "MOSBEZ_ANALYTICS",
+          "EKP59",
+          "EKP70",
+          "TERRITORY",
+          "TINAO",
+          "EKP81",
+          "EKP84",
+          "EKP89",
+          "EKP91"
+        ],
+        "operator_comment": "Орлова Анна Викторовна. Я уже сообщала о дыме по адресу: город Тула, улица Советская, дом 24, квартира 18. Теперь дым виден на лестнице. Сколько людей осталось внутри, не знаю. Звоню с того же номера.",
+        "norm_seconds": 180,
+        "caller_name": "Орлова Анна Викторовна",
+        "aon": "+7 921 555 18 42",
+        "caller_phone": "",
+        "flags": {},
+        "empty_contact": false,
+        "questionnaire_answers": {
+          "1": {
+            "feature_0": "жилой дом",
+            "feature_1": "квартира",
+            "feature_2": "дым",
+            "fire_objects": [
+              "квартира",
+              "лестница"
+            ],
+            "victims": "unknown"
+          }
+        },
+        "victims": false,
+        "life_danger": false,
+        "access_blocked": false
+      },
+      "classifier_codes": [
+        "1050102"
+      ],
+      "difficulty": "advanced",
+      "mode": "call",
+      "published": true,
+      "initial_card": {},
+      "generation": {
+        "method": "reviewed-source-workflow",
+        "source": "Инструкция по заведению карточки; скриншоты 112/ДДС",
+        "version": "2026-09-17"
+      }
+    },
+    {
+      "key": "workflow-silent",
+      "title": "112 · нет контакта · пустая карточка",
+      "category": "Прочие происшествия",
+      "caller_text": "Заявитель не отвечает; связь прервалась. Сведений о происшествии получить не удалось.",
+      "expected": {
+        "incident_type": "Нет контакта",
+        "address": "",
+        "services": [],
+        "operator_comment": "Заявитель не отвечает; связь прервалась. Сведений о происшествии получить не удалось.",
+        "norm_seconds": 180,
+        "caller_name": "Орлова Анна Викторовна",
+        "aon": "+7 921 555 18 42",
+        "caller_phone": "",
+        "flags": {},
+        "empty_contact": true,
+        "victims": false,
+        "life_danger": false,
+        "access_blocked": false
+      },
+      "classifier_codes": [],
+      "difficulty": "advanced",
+      "mode": "call",
+      "published": true,
+      "initial_card": {},
+      "generation": {
+        "method": "reviewed-source-workflow",
+        "source": "Инструкция по заведению карточки; скриншоты 112/ДДС",
+        "version": "2026-09-17"
+      }
+    },
+    {
+      "key": "workflow-sms",
+      "title": "112 · SMS · человек без сознания",
+      "category": "Оказание медицинской скорой и неотложной помощи",
+      "caller_text": "Я Орлова Анна Викторовна. Мужчина примерно 45 лет лежит на остановке, не отвечает, грудная клетка движется. Адрес: город Самара, улица Ново-Садовая, дом 22. К нему можно подойти. Не могу разговаривать, отвечайте сообщением.",
+      "expected": {
+        "incident_type": "Без сознания",
+        "address": "город Самара, улица Ново-Садовая, дом 22",
+        "services": [
+          "103",
+          "EKP84"
+        ],
+        "operator_comment": "Я Орлова Анна Викторовна. Мужчина примерно 45 лет лежит на остановке, не отвечает, грудная клетка движется. Адрес: город Самара, улица Ново-Садовая, дом 22. К нему можно подойти. Не могу разговаривать, отвечайте сообщением.",
+        "norm_seconds": 180,
+        "caller_name": "Орлова Анна Викторовна",
+        "aon": "+7 921 555 18 42",
+        "caller_phone": "",
+        "flags": {
+          "victims": true,
+          "medical_help": true
+        },
+        "empty_contact": false,
+        "questionnaire_answers": {
+          "22": {
+            "feature_0": "Без сознания",
+            "victims": "yes",
+            "medical_help": "yes",
+            "conscious": "no",
+            "breathing": "yes",
+            "age": 45,
+            "access_blocked": "no"
+          }
+        },
+        "victims": true,
+        "life_danger": false,
+        "access_blocked": false,
+        "victims_count": 1
+      },
+      "classifier_codes": [
+        "22020000"
+      ],
+      "difficulty": "advanced",
+      "mode": "call",
+      "published": true,
+      "initial_card": {},
+      "generation": {
+        "method": "reviewed-source-workflow",
+        "source": "Инструкция по заведению карточки; скриншоты 112/ДДС",
+        "version": "2026-09-17"
+      }
+    }
+  ]
+}

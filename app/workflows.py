@@ -11,7 +11,7 @@ from app.models import (User, Scenario, SessionRun, Audit, ClassifierVersion, In
                         ScenarioSettings, Material, Lesson, RunContext, CardEvent, ExpertReview, AccountState, AiJob, SipAccount, VoipCall, CardAttachment)
 from app.schemas import (CardIn, DraftIn, ResolveIn, SettingsIn, LessonIn, StatusIn,
                          WorkCallIn, ReviewIn, UserIn, UserUpdateIn)
-from app.classifier import parse_workbook, resolve_rules, FLAGS, SERVICE_NAMES
+from app.classifier import active_workbook, parse_workbook, resolve_rules, FLAGS, SERVICE_NAMES
 from app.training import available_statuses, card_indicator, REJECTED, REFUSED, TERMINAL
 
 SOURCES=Path('source_materials')
@@ -23,8 +23,7 @@ def log(s,u,action,details):
     s.add(Audit(user_id=u.id,action=action,details=details))
 
 def import_classifier(s):
-    path=next(SOURCES.glob('*.xlsx'),None)
-    if not path: return None
+    path=active_workbook(SOURCES)
     digest=hashlib.sha256(path.read_bytes()).hexdigest()
     version=s.scalar(select(ClassifierVersion).where(ClassifierVersion.sha256==digest))
     if version: return version
@@ -88,11 +87,18 @@ def assert_editable(s,u,scenario):
         if scenario.id in lesson.scenario_ids: raise HTTPException(409,'Сценарий используется в активном занятии')
 
 def resolved_card(s,card):
+    from app.questionnaires import answer_flags
     data=card.model_dump()
+    questionnaire_flags=answer_flags(card.questionnaire_answers)
     identifiers=list(dict.fromkeys(card.classifier_ids+([card.classifier_id] if card.classifier_id else [])))
     flags={**card.flags,'victims':card.victims or card.flags.get('victims',False),
            'access_blocked':card.access_blocked or card.flags.get('access_blocked',False),
            'life_danger':card.life_danger or card.flags.get('life_danger',False)}
+    flags.update(questionnaire_flags)
+    if card.victims_count is not None:
+        flags['victims']=card.victims_count>0
+    data['victims']=flags.get('victims',False)
+    if card.excluded_services and not card.service_override_reason.strip():raise HTTPException(422,'Укажите причину исключения автоматически назначенных служб')
     unknown=set(flags)-set(FLAGS)
     if unknown: raise HTTPException(422,'Неизвестные признаки ЕКП: '+', '.join(sorted(unknown)))
     types=[];dispatch={}
@@ -104,13 +110,19 @@ def resolved_card(s,card):
         for service in resolve_rules(incident.data['rules'],flags):
             if service['code'] in dispatch: dispatch[service['code']]['mappings']+=service['mappings']
             else: dispatch[service['code']]=service
+    for code in card.excluded_services:
+        if code in dispatch:dispatch.pop(code)
     for code in card.services:
+        if code in card.excluded_services:continue
         if code not in dispatch:
             dispatch[code]={'code':code,'name':SERVICE_NAMES.get(code,code),'visible':True,'origin':'Вручную','mappings':[]}
     data['classifier_ids']=identifiers;data['classifications']=types;data['flags']=flags
     if types: data['incident_type']='; '.join(item['title'] for item in types)
     if not data['address'].strip():
         data['address']=' '.join(str(data[key]) for key in ('city','street','house','building','structure','apartment') if data[key])
+    for service in dispatch.values():
+        main_codes={'MCHS':'101','Police':'102','AMBULANCE':'103','MOSGAZ':'104','MOSLIFT':'EKP54','AUTOROADS':'EKP37','MOSVODOCANAL':'EKP50','METRO':'EKP49','OEK':'EKP53','MOSGORTRANS':'EKP38','MOESK':'EKP52','MOEK':'EKP51','MZD':'EKP61','MGTS':'EKP47','MOSVODOSTOK':'EKP66','MOSCOLLECTOR':'EKP60','GORMOST':'GORMOST','GKH':'GORHOZ'}
+        service['main']=any(service['code'] in [main_codes.get(v.strip(),v.strip()) for v in t.data.get('main_service','').split(',')] for t in [s.get(IncidentType,i) for i in identifiers])
     data['services']=list(dispatch);data['dispatch']=list(dispatch.values())
     return data
 
@@ -146,14 +158,26 @@ def elapsed_seconds(run,context,at=None):
     snapshot=context.scenario_snapshot if context else {}
     if run.finished_at and (run.report or {}).get('skipped'):
         return run.report['elapsed_seconds']
+    if snapshot.get('mode','call')=='call' and context and context.registered_at and 'registration_elapsed_seconds' in snapshot:
+        return snapshot['registration_elapsed_seconds']
     active_since=snapshot.get('timer_active_since')
     anchor=datetime.fromisoformat(active_since) if active_since else aware(run.started_at)
-    return max(0,int(snapshot.get('timer_elapsed_seconds',0)+((at or aware(run.finished_at) or now())-anchor).total_seconds()))
+    cutoff=aware(context.registered_at) if context and context.registered_at and snapshot.get('mode','call')=='call' else (at or aware(run.finished_at) or now())
+    return max(0,int(snapshot.get('timer_elapsed_seconds',0)+max(0,(cutoff-anchor).total_seconds())))
 
 def run_payload(s,run,context):
     events=events_for(s,run);history=history_for(events)
     if context: context.registered_at=aware(context.registered_at)
     snapshot=context.scenario_snapshot if context else {}
+    indicator=card_indicator(context,{code:records for code,records in history.items() if not run.answers.get('dispatch') or any(service['code']==code and service.get('visible',True) for service in run.answers['dispatch'])},now())
+    previous_indicator=snapshot.get('last_indicator')
+    if context and context.registered_at and previous_indicator!=indicator:
+        if indicator in ('Не оповещено','Не завершено') or previous_indicator in ('Не оповещено','Не завершено'):
+            s.add(CardEvent(run_id=run.id,user_id=run.student_id,kind='card.indicator',data={'before':previous_indicator,'after':indicator,'automatic':True}))
+            s.add(Audit(user_id=run.student_id,action='card.indicator',details={'run_id':run.id,'before':previous_indicator,'after':indicator,'automatic':True}))
+        context.scenario_snapshot={**snapshot,'last_indicator':indicator};s.commit()
+    from app.models import TrainingMessage
+    unread=s.scalar(select(func.count()).select_from(TrainingMessage).where(TrainingMessage.run_id==run.id,TrainingMessage.read.is_(False)))
     return {'run_id':run.id,'scenario_id':run.scenario_id,'student_id':run.student_id,
             'started_at':aware(run.started_at),'finished_at':aware(run.finished_at),
             'timer_started_at':now()-timedelta(seconds=elapsed_seconds(run,context)), 'elapsed_seconds':elapsed_seconds(run,context),
@@ -161,15 +185,20 @@ def run_payload(s,run,context):
             'operator_id':snapshot.get('origin_operator_id',str(run.student_id)),'workstation':snapshot.get('origin_workstation',str(run.student_id)),
             'mode':snapshot.get('mode','call'),'service_code':snapshot.get('service_code','112'),
             'norm_seconds':snapshot.get('expected',{}).get('norm_seconds',30),
+            'timer_frozen':bool(context and context.registered_at and snapshot.get('mode','call')=='call'),
+            'postprocessing_seconds':max(0,int(((aware(run.finished_at) or now())-context.registered_at).total_seconds())) if context and context.registered_at else 0,
             'last_request_id':snapshot.get('last_draft_request_id'),'registered_at':context.registered_at if context else None,
-            'status':'Пропущена' if (run.report or {}).get('skipped') else card_indicator(context,{code:records for code,records in history.items() if not run.answers.get('dispatch') or any(service['code']==code and service.get('visible',True) for service in run.answers['dispatch'])},now()),'service_history':history,
+            'status':'Пропущена' if (run.report or {}).get('skipped') else indicator,'service_history':history,
             'available_statuses':{code:available_statuses(records[-1]['status'],code) for code,records in history.items()},
             'events':[{'id':e.id,'at':aware(e.at),'kind':e.kind,'data':e.data,'user_id':e.user_id} for e in events],
-            'report':run.report}
+            'parent_run_id':snapshot.get('parent_run_id'),'sms_unread':unread,'reminder':snapshot.get('reminder'),'report':run.report}
 
 def register_card(s,u,run,context):
     if context.registered_at: return
+    registration_elapsed=elapsed_seconds(run,context)
     context.registered_at=now()
+    context.scenario_snapshot={**context.scenario_snapshot,'registration_elapsed_seconds':registration_elapsed}
+    s.add(CardEvent(run_id=run.id,user_id=u.id,kind='card.register',data={'elapsed_seconds':registration_elapsed}))
     for code in run.answers.get('services',[]):
         s.add(CardEvent(run_id=run.id,user_id=u.id,kind='service.status',data={'service_code':code,'status':'Добавлена','comment':'','unit_number':''}))
     log(s,u,'card.register',{'run_id':run.id})
@@ -206,6 +235,8 @@ def begin_run(s,u,scenario,lesson=None):
         if snapshot['service_code'] not in run.answers['services']: raise HTTPException(422,'Учебная служба отсутствует в списке оповещения карточки')
         register_card(s,u,run,context)
         s.add(CardEvent(run_id=run.id,user_id=u.id,kind='service.status',data={'service_code':snapshot['service_code'],'status':'Получена службой','comment':'','unit_number':''}))
+    else:
+        run.answers=CardIn(aon=scenario.expected.get('aon','')).model_dump()
     log(s,u,'run.start',{'run_id':run.id,'lesson_id':lesson.id if lesson else None})
     s.commit();return run,context
 
@@ -240,6 +271,11 @@ def finalize_run(s,u,run,context,card,evaluate,commit=True):
     if context and snapshot.get('mode')=='dispatch':
         from app.ml import apply_neural
         apply_neural(report,scenario.expected.get('operator_comment',''),text,'Комментарий диспетчера',30)
+    if context and snapshot.get('mode','call')=='call':
+        report['postprocessing_seconds']=max(0,int((now()-aware(context.registered_at)).total_seconds())) if context.registered_at else 0
+    from app.models import OperatorPresence
+    operator=s.get(OperatorPresence,run.student_id)
+    if operator:operator.available_after=now()+timedelta(seconds=10)
     report['run_id']=run.id
     from app.grammar import check_grammar
     report['grammar']=check_grammar(text if context and snapshot.get('mode')=='dispatch' else run.answers.get('description','')+'\n'+run.answers.get('operator_comment',''))
@@ -294,6 +330,10 @@ def register_routes(app,db,current,evaluate,pwd):
         s.query(AiJob).filter(AiJob.teacher_id==user_id).delete(synchronize_session=False)
         s.query(ExpertReview).filter(ExpertReview.teacher_id==user_id).delete(synchronize_session=False)
         s.query(CardEvent).filter(CardEvent.user_id==user_id).delete(synchronize_session=False)
+        from app.models import OperatorPresence,TrainingMessage,TrainingIssue
+        s.query(OperatorPresence).filter(OperatorPresence.user_id==user_id).delete(synchronize_session=False)
+        s.query(TrainingMessage).filter(or_(TrainingMessage.student_id==user_id,TrainingMessage.teacher_id==user_id)).delete(synchronize_session=False)
+        s.query(TrainingIssue).filter(TrainingIssue.user_id==user_id).delete(synchronize_session=False)
         s.query(SipAccount).filter(SipAccount.user_id==user_id).delete(synchronize_session=False)
         s.query(AccountState).filter(AccountState.user_id==user_id).delete(synchronize_session=False)
         log(s,u,'user.delete',{'user_id':user_id,'username':user.username});s.delete(user);s.commit();return {'status':'deleted','user_id':user_id}
@@ -328,8 +368,14 @@ def register_routes(app,db,current,evaluate,pwd):
         query=select(IncidentType).where(IncidentType.version_id==version.id)
         if category: query=query.where(IncidentType.category==category)
         if q:
-            escaped=q.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')
-            query=query.where(IncidentType.title.ilike(f'%{escaped}%',escape='\\')|IncidentType.code.ilike(f'%{escaped}%',escape='\\'))
+            import re
+            aliases={'101':'пожар','104':'газ','103':'медицин','102':'правопоряд'}
+            if q.strip() in aliases:
+                query=query.where(IncidentType.category.ilike('%'+aliases[q.strip()]+'%'))
+            else:
+                for token in re.findall(r'[а-яёa-z0-9]+',q.lower()):
+                    escaped=token.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')
+                    query=query.where(or_(IncidentType.title.ilike(f'%{escaped}%',escape='\\'),IncidentType.code.ilike(f'%{escaped}%',escape='\\')))
         return [{'id':x.id,'code':x.code,'title':x.title,'category':x.category,'features':x.data['features'],'extra_questions':x.data['extra_questions'],'source_row':x.source_row} for x in s.scalars(query.order_by(IncidentType.source_row).limit(max(1,min(limit,1500))))]
 
     @app.get('/api/classifier/types/{type_id}')
@@ -442,7 +488,10 @@ def register_routes(app,db,current,evaluate,pwd):
     def cards(q:str=Query(default='',max_length=1000), student_id:int|None=Query(default=None), address:str=Query(default='',max_length=1000),
               descriptive_address:str=Query(default='',max_length=1000),borough:str=Query(default='',max_length=200),
               district:str=Query(default='',max_length=200),source:str=Query(default='',max_length=100),
-              status:str=Query(default='',max_length=100),limit:int=Query(default=200,ge=1,le=200),offset:int=Query(default=0,ge=0),
+              status:str=Query(default='',max_length=500),services:str=Query(default='',max_length=1000),channels:str=Query(default='',max_length=1000),
+              caller:str=Query(default='',max_length=200),description:str=Query(default='',max_length=1000),incident:str=Query(default='',max_length=1000),
+              operator:str=Query(default='',max_length=100),workstation:str=Query(default='',max_length=100),card_number:int|None=Query(default=None,ge=1),
+              date_from:datetime|None=None,date_to:datetime|None=None,unread_sms:bool=False,limit:int=Query(default=200,ge=1,le=200),offset:int=Query(default=0,ge=0),
               u=Depends(current),s:Session=Depends(db)):
         query=select(SessionRun).order_by(SessionRun.id.desc())
         if u.role=='student':query=query.where(SessionRun.student_id==u.id)
@@ -454,11 +503,23 @@ def register_routes(app,db,current,evaluate,pwd):
         for key,value in [('address',address),('descriptive_address',descriptive_address),('borough',borough),('district',district)]:
             if value:query=query.where(SessionRun.answers[key].as_string().ilike(pattern(value),escape='\\'))
         if source:query=query.where(SessionRun.answers['source_system'].as_string()==source)
+        if date_from:query=query.where(SessionRun.started_at>=aware(date_from))
+        if date_to:query=query.where(SessionRun.started_at<=aware(date_to))
+        if card_number is not None:query=query.where(SessionRun.id==card_number)
+        if caller:query=query.where(or_(*[SessionRun.answers[key].as_string().ilike(pattern(caller),escape='\\') for key in ['caller_name','aon','caller_phone','on_site_phone']]))
+        for key,value in [('description',description),('incident_type',incident)]:
+            if value:query=query.where(SessionRun.answers[key].as_string().ilike(pattern(value),escape='\\'))
+        filtered=bool(status or services or channels or operator or workstation or unread_sms)
         result=[];matched=0
-        for run in s.scalars(query if status else query.offset(offset).limit(limit)):
+        for run in s.scalars(query if filtered else query.offset(offset).limit(limit)):
             payload=run_payload(s,run,s.get(RunContext,run.id))
-            if status:
-                if payload['status']!=status:continue
+            if filtered:
+                if status and payload['status'] not in status.split(','):continue
+                if services and not set(services.split(','))&set(payload['card'].get('services',[])):continue
+                if channels and payload['card'].get('channel') not in channels.split(','):continue
+                if operator and payload['operator_id']!=operator:continue
+                if workstation and payload['workstation']!=workstation:continue
+                if unread_sms and not payload['sms_unread']:continue
                 matched+=1
                 if matched<=offset:continue
             result.append(payload)
@@ -517,6 +578,11 @@ def register_routes(app,db,current,evaluate,pwd):
         if u.role!='student': raise HTTPException(403)
         run,context=get_run(s,u,run_id,True);ensure_writable(run,context,s)
         if not context: raise HTTPException(409)
+        if (run.answers.get('no_contact') or run.answers.get('call_lost')) and not run.answers.get('description') and not run.answers.get('classifier_ids'):
+            context.processed=True;context.checked=True
+            context.scenario_snapshot={**context.scenario_snapshot,'empty_contact':True}
+            run.answers={**run.answers,'empty_contact':True,'services':[],'dispatch':[]}
+            register_card(s,u,run,context);s.commit();return run_payload(s,run,context)
         if not run.answers.get('description'):raise HTTPException(422,'Заполните описание')
         if not run.answers.get('address') and any(x.get('visible',True) for x in run.answers.get('dispatch',[])):raise HTTPException(422,'Для оповещения реагирующих служб требуется адрес')
         register_card(s,u,run,context);s.commit();return run_payload(s,run,context)
@@ -541,6 +607,10 @@ def register_routes(app,db,current,evaluate,pwd):
         if context and context.scenario_snapshot.get('mode')=='dispatch':
             own=history_for(events_for(s,run)).get(context.scenario_snapshot['service_code'],[])
             if own and own[-1]['status'] in TERMINAL: raise HTTPException(409,'Служба завершила работу; редактирование закрыто')
+        if not context or not context.registered_at: raise HTTPException(409,'Сначала сохраните карточку')
+        version=s.scalar(select(ClassifierVersion).order_by(ClassifierVersion.id.desc()))
+        directory_codes=set(SERVICE_NAMES)|({x['code'] for x in version.manifest['columns']} if version else set())
+        if x.service and x.service not in directory_codes and x.service not in run.answers.get('services',[]): raise HTTPException(422,'Выберите службу из справочника или заполните «Куда звонили»')
         s.add(CardEvent(run_id=run.id,user_id=u.id,kind='work.call',data=x.model_dump()));log(s,u,'work.call',{'run_id':run.id});s.commit();return run_payload(s,run,context)
 
     @app.post('/api/runs/{run_id}/processed')

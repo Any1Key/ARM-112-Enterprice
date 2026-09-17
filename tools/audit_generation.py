@@ -25,7 +25,7 @@ def main():
     args.add_argument('--output',type=Path,default=Path('/tmp/ekp-generation-audit'))
     args.add_argument('--update-manifest',action='store_true')
     args=args.parse_args()
-    data=parse_workbook(next(Path('source_materials').glob('*.xlsx')))
+    data=parse_workbook(active_workbook())
     snapshot={'source_sha256':data['sha256'],'items':[{k:x[k] for k in ('code','group_code','title','features')} for x in data['items']]}
     for t in snapshot['items']:
         p=build_profile(t)

@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "playwright": "1.50.1"
+  },
+  "name": "arm112-browser-checks",
+  "private": true
+}

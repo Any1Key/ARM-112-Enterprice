@@ -28,3 +28,17 @@
 ## Данные заявителя в сценариях
 
 Генератор сценария возвращает в `expected` поля `caller_name`, `aon`, `caller_phone` и `on_site_phone` вместе с адресом и репликой заявителя. Номера предназначены только для учебных данных и должны быть проверены преподавателем перед утверждением.
+
+## Дополнения по новой инструкции
+
+- `GET /api/questionnaires`, `/api/services/directory` — типизированные учебные формы и справочник служб. Ответы сохраняются в `questionnaire_answers`, число пострадавших — `victims_count`; исключение автоматически рассчитанной службы требует `service_override_reason`.
+- `POST/DELETE /api/runs/{id}/supplement/lock`, `PUT /api/runs/{id}/supplement` — дополнение зарегистрированной карточки с блокировкой и ревизией; имя и статус заявителя защищены.
+- `GET /api/runs/{id}/matches`, `POST /api/runs/{id}/link` — совпадения и связь с главной карточкой.
+- `GET/PUT /api/operator/presence`, `POST /api/sms/incoming`, `GET /api/sms/queue`, `POST /api/sms/{id}/accept`, `GET/POST /api/runs/{id}/sms` — учебная очередь и история SMS; отправка не использует внешний шлюз.
+- `POST /api/runs/{id}/reminder`, `GET /api/reminders`, `DELETE /api/runs/{id}/reminder` — напоминания.
+- `POST /api/runs/{id}/help`, `GET /api/notifications`, `POST /api/notifications/{id}/ack` — запрос руководителю и подтверждение.
+- `POST/GET /api/issues`, `GET /api/issues/{id}/attachment` — сообщения об ошибках, изображение по правам.
+- `POST /api/telephony/account?device=hardware`, `POST /api/telephony/runs/{id}/call?device=hardware` — отдельная регистрация и входящий вызов на UDP IP-телефон.
+- `POST /api/telephony/services/{101|102|103|104}/prepare`, `POST /api/telephony/runs/{id}/transfer/{extension}`, `/conference` — озвученные учебные службы, перевод и персональная конференция.
+
+После регистрации `timer_frozen=true`: время создания больше не растёт, последующая обработка учитывается отдельно. Студенческий payload не содержит эталон опросной карты.

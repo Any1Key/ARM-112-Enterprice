@@ -21,6 +21,7 @@ def available_statuses(current,service):
 
 def card_indicator(context,service_history,now):
     if not context or not context.registered_at: return 'Черновик'
+    if getattr(context,'scenario_snapshot',{}).get('empty_contact'): return 'Завершена'
     latest={code:events[-1]['status'] for code,events in service_history.items() if events}
     if not latest or all(status in (COMPLETE,NO_CREW) for status in latest.values()): return 'Завершена'
     if context.checked and any(status in (REJECTED,REFUSED) for status in latest.values()): return 'Отказ'

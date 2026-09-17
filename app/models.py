@@ -144,3 +144,32 @@ class AiJob(Base):
     result:Mapped[dict|None]=mapped_column(JSON,nullable=True)
     error:Mapped[str|None]=mapped_column(Text,nullable=True)
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
+
+class OperatorPresence(Base):
+    __tablename__='operator_presence'
+    user_id:Mapped[int]=mapped_column(primary_key=True)
+    state:Mapped[str]=mapped_column(String(32),default='unavailable')
+    available_after:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True)
+    updated_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
+
+class TrainingMessage(Base):
+    __tablename__='training_messages'
+    id:Mapped[int]=mapped_column(primary_key=True)
+    student_id:Mapped[int]=mapped_column(index=True)
+    teacher_id:Mapped[int]=mapped_column(index=True)
+    scenario_id:Mapped[int]=mapped_column(ForeignKey('scenarios.id'))
+    aon:Mapped[str]=mapped_column(String(100))
+    text:Mapped[str]=mapped_column(Text)
+    coordinates:Mapped[dict]=mapped_column(JSON,default=dict)
+    run_id:Mapped[int|None]=mapped_column(nullable=True,index=True)
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
+    read:Mapped[bool]=mapped_column(default=False)
+
+class TrainingIssue(Base):
+    __tablename__='training_issues'
+    id:Mapped[int]=mapped_column(primary_key=True)
+    user_id:Mapped[int]=mapped_column(index=True)
+    run_id:Mapped[int|None]=mapped_column(nullable=True)
+    description:Mapped[str]=mapped_column(Text)
+    attachment:Mapped[str|None]=mapped_column(nullable=True)
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
