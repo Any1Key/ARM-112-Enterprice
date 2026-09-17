@@ -8,11 +8,15 @@ from fastapi import Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from pydantic import BaseModel,Field,ValidationError
 from sqlalchemy import select
-from app.models import SessionRun,RunContext,IncidentType,ClassifierVersion,CardEvent,OperatorPresence,TrainingMessage,TrainingIssue,Scenario,User
+from app.models import SessionRun,RunContext,IncidentType,ClassifierVersion,CardEvent,OperatorPresence,TrainingMessage,TrainingIssue,Scenario,User,Audit
 from app.schemas import CardIn,SupplementIn
 from app.classifier import SERVICE_NAMES
 from app.workflows import get_run,ensure_writable,run_payload,now,aware,log,begin_run,check_scenario_access
 from app.questionnaires import catalog
+
+class IssueReviewIn(BaseModel):
+    status:str=Field(pattern='^(new|done|cancelled|false)$')
+    comment:str=Field(default='',max_length=5000)
 
 class PresenceIn(BaseModel):
     state:str=Field(pattern='^(available|unavailable|disconnected|error)$')
@@ -245,10 +249,40 @@ def register_extensions(app,db,current):
             root=Path('data/runtime/issues');root.mkdir(parents=True,exist_ok=True);(root/filename).write_bytes(data)
         row=TrainingIssue(user_id=u.id,run_id=run_id,description=description,attachment=filename);s.add(row);s.flush();log(s,u,'issue.create',{'issue_id':row.id,'run_id':run_id});s.commit();return {'id':row.id}
 
+    def issue_rows(s,u,own=False):
+        query=select(TrainingIssue)
+        if own:query=query.where(TrainingIssue.user_id==u.id)
+        items=list(s.scalars(query.order_by(TrainingIssue.id.desc()).limit(200)))
+        ids={item.id for item in items};reviews={}
+        for event in s.scalars(select(Audit).where(Audit.action=='issue.review',Audit.details['issue_id'].as_integer().in_(ids)).order_by(Audit.id.desc())):
+            issue_id=event.details.get('issue_id')
+            if issue_id in ids and issue_id not in reviews:reviews[issue_id]=event
+        names={user.id:user.username for user in s.scalars(select(User))}
+        result=[]
+        for item in items:
+            review=reviews.get(item.id)
+            result.append({'id':item.id,'description':item.description,'user_id':item.user_id,'username':names.get(item.user_id,str(item.user_id)),
+                'run_id':item.run_id,'at':item.created_at,'attachment_url':f'/api/issues/{item.id}/attachment' if item.attachment else None,
+                'status':review.details['status'] if review else 'new','comment':review.details.get('comment','') if review else '',
+                'updated_at':review.at if review else None,'updated_by':names.get(review.user_id) if review else None})
+        return result
+
     @app.get('/api/issues')
     def issues(u=Depends(current),s=Depends(db)):
         if u.role!='admin':raise HTTPException(403)
-        return [{'id':x.id,'description':x.description,'user_id':x.user_id,'run_id':x.run_id,'at':x.created_at,'attachment_url':f'/api/issues/{x.id}/attachment' if x.attachment else None} for x in s.scalars(select(TrainingIssue).order_by(TrainingIssue.id.desc()).limit(200))]
+        return issue_rows(s,u)
+
+    @app.get('/api/issues/mine')
+    def own_issues(u=Depends(current),s=Depends(db)):
+        return issue_rows(s,u,own=True)
+
+    @app.put('/api/issues/{issue_id}')
+    def review_issue(issue_id:int,payload:IssueReviewIn,u=Depends(current),s=Depends(db)):
+        if u.role!='admin':raise HTTPException(403)
+        if not s.get(TrainingIssue,issue_id):raise HTTPException(404,'Обращение не найдено')
+        s.add(Audit(user_id=u.id,action='issue.review',details={'issue_id':issue_id,'status':payload.status,'comment':payload.comment.strip()}))
+        s.commit()
+        return {'status':'ok'}
 
     @app.get('/api/issues/{issue_id}/attachment')
     def issue_attachment(issue_id:int,u=Depends(current),s=Depends(db)):

@@ -68,3 +68,11 @@
 - `GET /api/operations/restore/jobs/{job_id}` — наблюдение по секретному заголовку `X-Restore-Token`, работает без БД и после аннулирования прежней сессии. Состояния: queued, draining, checking_files, validating, backing_up, restoring_files, switching, finalizing, recovering, succeeded, failed.
 
 На время восстановления остальные API возвращают 503; звонки также блокируются в диалплане. `/health` и статические страницы доступны. После успеха старые токены возвращают 401, требуется новый вход. Полный архив восстанавливает БД, аудио и вложения вместе; проверяются SHA-256 и безопасная распаковка (до 8 ГБ). Дамп `.dump` восстанавливает только БД. Подробности — `OPERATIONS.md`.
+
+## Обращения о проблемах
+
+- `POST /api/issues` — multipart: `description`, необязательные `run_id` и `attachment` (PNG/JPEG/WebP до 5 МБ).
+- `GET /api/issues` — список для администратора: автор, карточка, описание, вложение, `status`, `comment`, `updated_at`, `updated_by`; до 200 последних обращений.
+- `GET /api/issues/mine` — только обращения текущего пользователя с результатом обработки.
+- `PUT /api/issues/{id}` — только администратор, JSON `status` (`new`, `done`, `cancelled`, `false`) и `comment` (до 5000 символов). Изменение сохраняется в аудит `issue.review`.
+- `GET /api/issues/{id}/attachment` — изображение, доступно автору и администратору.

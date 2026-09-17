@@ -171,7 +171,8 @@ def cleanup_expired():
     with SessionLocal() as s:
         old=list(s.scalars(select(SessionRun.id).where((SessionRun.finished_at<cutoff)|(SessionRun.finished_at.is_(None)&(SessionRun.started_at<cutoff)))))
         for run_id in old:delete_run_data(s,run_id)
-        s.query(Audit).filter(Audit.at<cutoff).delete(synchronize_session=False)
+        # Issue reviews are durable support state, also included in DB backups.
+        s.query(Audit).filter(Audit.at<cutoff,Audit.action!='issue.review').delete(synchronize_session=False)
         s.commit()
     return len(old)
 
