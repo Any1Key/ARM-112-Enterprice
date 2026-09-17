@@ -37,9 +37,13 @@ def test_health_and_authorization(client):
 def test_complete_training_cycle_and_idempotent_finish(client):
     student = auth(client, 'student')
     teacher = auth(client, 'teacher')
+    from test_workflows import assign_scenario
+    teacher = auth(client,'teacher')
+    scenario = next(x for x in client.get('/api/scenarios',headers=teacher).json() if x['mode']=='call' and x['published'])
+    assign_scenario(client,teacher,scenario['id'])
     scenario = client.get('/api/scenarios', headers=student).json()[0]
     assert scenario['expected'] is None
-    expected = client.get('/api/scenarios', headers=teacher).json()[0]['expected']
+    expected = next(x['expected'] for x in client.get('/api/scenarios',headers=teacher).json() if x['id']==scenario['id'])
     run = client.post(f'/api/runs/{scenario["id"]}/start', headers=student).json()
     answers = {k: v for k, v in expected.items() if k != 'norm_seconds'}
     answers.update(description='Сильное задымление, внутри могут быть люди', caller_name='Иван', victims=True)
@@ -75,6 +79,10 @@ def test_roles_and_scenario_validation(client):
 
 def test_student_cannot_finish_another_students_run(client):
     student = auth(client, 'student')
+    from test_workflows import assign_scenario
+    teacher = auth(client,'teacher')
+    scenario = next(x for x in client.get('/api/scenarios',headers=teacher).json() if x['mode']=='call' and x['published'])
+    assign_scenario(client,teacher,scenario['id'])
     scenario = client.get('/api/scenarios', headers=student).json()[0]
     run = client.post(f'/api/runs/{scenario["id"]}/start', headers=student).json()
     module = sys.modules['app.main']

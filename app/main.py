@@ -129,6 +129,8 @@ def startup():
         install_practice_catalog(s)
         from app.telephony import recover_interrupted_calls
         recover_interrupted_calls(s)
+        from app.workflows import archive_unassigned_runs
+        archive_unassigned_runs(s)
     cleanup_expired()
     def retention_loop():
         while True:
@@ -229,7 +231,7 @@ def scenarios(u=Depends(current),s:Session=Depends(db)):
     result=[]
     for x in s.scalars(select(Scenario).order_by(Scenario.id.desc())):
         if u.role=='student':
-            try: check_scenario_access(s,u,x)
+            try: check_scenario_access(s,u,x,for_listing=True)
             except HTTPException: continue
         setting=s.get(ScenarioSettings,x.id)
         result.append({'id':x.id,'title':x.title,'category':x.category,'caller_text':x.caller_text,
@@ -268,6 +270,8 @@ def edit_scenario(scenario_id:int,x:ScenarioIn,u=Depends(current),s:Session=Depe
 @app.post('/api/runs/{scenario_id}/start')
 def start_run(scenario_id:int,u=Depends(current),s:Session=Depends(db)):
     if u.role!='student': raise HTTPException(403,'Запуск учебной сессии доступен обучающемуся')
+    from app.workflows import archive_unassigned_runs
+    archive_unassigned_runs(s,u.id)
     s.scalar(select(User).where(User.id==u.id).with_for_update())
     sc=s.get(Scenario,scenario_id)
     if not sc: raise HTTPException(404)

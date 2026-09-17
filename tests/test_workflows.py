@@ -4,7 +4,11 @@ from test_health import client, auth
 from app.training import available_statuses, COMPLETE, REFUSED, NO_CREW
 
 
-def create_scenario(client, teacher, mode='call', published=True, service='102'):
+def assign_scenario(client,teacher,scenario,student_id=3):
+    response=client.post('/api/sms/incoming',headers=teacher,json={'student_id':student_id,'scenario_id':scenario,'aon':'+7 921 555 18 42','text':'Задание назначено преподавателем'})
+    assert response.status_code==200,response.text
+
+def create_scenario(client, teacher, mode='call', published=True, service='102', assigned=False):
     payload={'title':'Сценарий для интеграционной проверки','category':'Учебный','caller_text':'Учебное сообщение',
              'expected':{'incident_type':'Учебный','address':'Москва дом 1','services':[service],
                          'operator_comment':'Сообщение принято бригада направлена','norm_seconds':30}}
@@ -15,6 +19,7 @@ def create_scenario(client, teacher, mode='call', published=True, service='102')
                         json={'mode':mode,'published':published,'initial_card':{'incident_type':'Учебный','address':'Москва дом 1',
                               'description':'Учебное сообщение','services':[service]}})
     assert response.status_code==200,response.text
+    if assigned:assign_scenario(client,teacher,identifier)
     return identifier
 
 
@@ -40,7 +45,7 @@ def test_full_classifier_import_is_versioned_and_idempotent(client):
 
 def test_draft_restore_revision_and_required_dispatch(client):
     student,teacher=auth(client,'student'),auth(client,'teacher')
-    scenario=create_scenario(client,teacher)
+    scenario=create_scenario(client,teacher,assigned=True)
     type_=client.get('/api/classifier/types?q=1050102',headers=student).json()[0]
     start=client.post(f'/api/runs/{scenario}/start',headers=student).json()
     repeated=client.post(f'/api/runs/{scenario}/start',headers=student).json()
@@ -159,7 +164,7 @@ def test_card_indicators_follow_acknowledgement_and_completion_times():
 
 def test_retry_draft_after_lost_acknowledgement_does_not_overwrite(client):
     student,teacher=auth(client,'student'),auth(client,'teacher')
-    identifier=create_scenario(client,teacher)
+    identifier=create_scenario(client,teacher,assigned=True)
     run=client.post(f'/api/runs/{identifier}/start',headers=student).json()['run_id']
     request={'revision':0,'request_id':'retry-key-123','card':{'address':'Москва дом 1','description':'Не терять'}}
     first=client.put(f'/api/runs/{run}/draft',headers=student,json=request)
@@ -196,6 +201,7 @@ def test_non_emergency_card_can_have_no_address_or_dispatch(client):
     assert created.status_code==200
     identifier=created.json()['id']
     assert client.put(f'/api/scenarios/{identifier}/settings',headers=teacher,json={'published':True}).status_code==200
+    assign_scenario(client,teacher,identifier)
     run=client.post(f'/api/runs/{identifier}/start',headers=student).json()
     card={**expected,'description':'Ошибочно набран номер'};card.pop('norm_seconds')
     assert client.put(f'/api/runs/{run["run_id"]}/draft',headers=student,json={'card':card,'revision':0}).status_code==200
@@ -211,7 +217,7 @@ def test_skip_preserves_draft_and_allows_next_card(client, monkeypatch):
     from app import main
     from app.models import VoipCall
     student,teacher=auth(client,'student'),auth(client,'teacher')
-    first=create_scenario(client,teacher);second=create_scenario(client,teacher)
+    first=create_scenario(client,teacher,assigned=True);second=create_scenario(client,teacher,assigned=True)
     run_id=client.post(f'/api/runs/{first}/start',headers=student).json()['run_id']
     assert client.put(f'/api/runs/{run_id}/draft',headers=student,json={'revision':0,'card':{'description':'Только часть сведений'}}).status_code==200
     with main.SessionLocal() as s:
@@ -237,8 +243,9 @@ def test_skip_preserves_draft_and_allows_next_card(client, monkeypatch):
 
 
 def test_skip_cannot_change_completed_grade(client):
-    student=auth(client,'student')
-    scenario=client.get('/api/scenarios',headers=student).json()[0]['id']
+    student=auth(client,'student');teacher=auth(client,'teacher')
+    scenario=next(x['id'] for x in client.get('/api/scenarios',headers=teacher).json() if x['mode']=='call' and x['published'])
+    assign_scenario(client,teacher,scenario)
     run_id=client.post(f'/api/runs/{scenario}/start',headers=student).json()['run_id']
     report=client.post(f'/api/runs/{run_id}/finish',headers=student,json={}).json()
     assert client.post(f'/api/runs/{run_id}/skip',headers=student).status_code==409
@@ -250,7 +257,7 @@ def test_resume_skipped_card_excludes_pause_and_keeps_history(client, monkeypatc
     from app import main, workflows
     from app.models import SessionRun
     student,teacher=auth(client,'student'),auth(client,'teacher')
-    scenario=create_scenario(client,teacher)
+    scenario=create_scenario(client,teacher,assigned=True)
     run_id=client.post(f'/api/runs/{scenario}/start',headers=student).json()['run_id']
     origin=datetime(2026,9,17,9,0,tzinfo=timezone.utc)
     with main.SessionLocal() as s:

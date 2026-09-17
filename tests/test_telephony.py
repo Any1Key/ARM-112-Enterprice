@@ -58,7 +58,7 @@ def test_unregistered_call_is_rejected_and_prepared_calls_can_cancel_and_retry(c
     monkeypatch.setenv('SIP_PROVISION_ROOT',str(tmp_path/'sip'))
     monkeypatch.setattr(telephony,'ami_action',lambda *a,**kw:{'Response':'Success'})
     assert client.post('/api/telephony/account',headers=student).status_code==200
-    scenario=create_scenario(client,teacher);run=client.post(f'/api/runs/{scenario}/start',headers=student).json();identifier=run['run_id']
+    scenario=create_scenario(client,teacher,assigned=True);run=client.post(f'/api/runs/{scenario}/start',headers=student).json();identifier=run['run_id']
     response=client.post(f'/api/telephony/runs/{identifier}/call',headers=student)
     assert response.status_code==409 and 'не зарегистрирован' in response.json()['detail']
     launched=[];monkeypatch.setattr(telephony,'phone_registered',lambda name:True)
@@ -80,6 +80,9 @@ def test_unregistered_call_is_rejected_and_prepared_calls_can_cancel_and_retry(c
 def test_audio_prewarm_requires_assigned_published_call_scenario(client,monkeypatch):
     from test_workflows import create_scenario
     student,teacher=auth(client,'student'),auth(client,'teacher');scenario=create_scenario(client,teacher)
+    assert client.post(f'/api/telephony/scenarios/{scenario}/prepare',headers=student).status_code==403
+    from test_workflows import assign_scenario
+    assign_scenario(client,teacher,scenario)
     monkeypatch.setattr(telephony,'prepare_speech',lambda *args:{'key':'a'*64,'voice':'irina','cached':True})
     response=client.post(f'/api/telephony/scenarios/{scenario}/prepare',headers=student)
     assert response.status_code==200 and response.json()['cached']

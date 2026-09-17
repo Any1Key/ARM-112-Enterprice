@@ -6,7 +6,7 @@ from app import workflows
 
 
 def start(client,student,teacher):
-    scenario=create_scenario(client,teacher)
+    scenario=create_scenario(client,teacher,assigned=True)
     return client.post(f'/api/runs/{scenario}/start',headers=student).json()
 
 

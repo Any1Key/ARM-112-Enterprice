@@ -8,7 +8,7 @@ from app.workflows import now,postprocessing_seconds
 
 def test_teacher_report_keeps_snapshot_and_student_card_and_permissions(client):
     student,teacher,admin=auth(client,'student'),auth(client,'teacher'),auth(client,'admin')
-    scenario=create_scenario(client,teacher)
+    scenario=create_scenario(client,teacher,assigned=True)
     run=client.post(f'/api/runs/{scenario}/start',headers=student).json()
     draft={'description':'Дым у подъезда','address':'Тула, Советская 24','caller_name':'Анна','victims_count':2}
     assert client.put(f"/api/runs/{run['run_id']}/draft",headers=student,json={'revision':run['revision'],'card':draft}).status_code==200
@@ -41,7 +41,7 @@ def test_registered_postprocessing_excludes_skipped_interval():
 
 
 def test_recordings_are_per_call_and_legacy_is_not_attributed_to_new_call(client,monkeypatch,tmp_path):
-    student,teacher=auth(client,'student'),auth(client,'teacher');scenario=create_scenario(client,teacher)
+    student,teacher=auth(client,'student'),auth(client,'teacher');scenario=create_scenario(client,teacher,assigned=True)
     run=client.post(f'/api/runs/{scenario}/start',headers=student).json();identifier=run['run_id'];monkeypatch.setenv('CALL_MEDIA_ROOT',str(tmp_path))
     from app import main
     with main.SessionLocal() as s:

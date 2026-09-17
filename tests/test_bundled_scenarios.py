@@ -10,7 +10,9 @@ def test_permanent_catalog_visible_and_idempotent(client):
     catalog=json.loads(CATALOG.read_text())['cards']
     assert len(catalog)==24
     student=auth(client,'student')
-    cards=client.get('/api/scenarios',headers=student).json()
+    teacher=auth(client,'teacher')
+    assert client.get('/api/scenarios',headers=student).json()==[]
+    cards=[x for x in client.get('/api/scenarios',headers=teacher).json() if x['published'] and x['mode']=='call']
     assert len(cards)==35
     assert {item['title'] for item in catalog}.issubset({card['title'] for card in cards})
     with main.SessionLocal() as s:
@@ -25,6 +27,9 @@ def test_permanent_catalog_visible_and_idempotent(client):
         install_practice_catalog(s);install_practice_catalog(s)
         assert s.scalar(select(func.count()).select_from(Scenario))==36
         assert s.get(Scenario,first.id).caller_text=='Правка преподавателя'
+    from test_workflows import assign_scenario
+    assign_scenario(client,teacher,cards[0]['id'])
+    assert [x['id'] for x in client.get('/api/scenarios',headers=student).json()]==[cards[0]['id']]
     run=client.post(f"/api/runs/{cards[0]['id']}/start",headers=student)
     assert run.status_code==200 and run.json()['norm_seconds']==180
 

@@ -109,7 +109,10 @@ def test_finalization_invalidates_sessions_and_records_restore(restore_root,clie
 def test_active_calls_and_generation_prevent_restore(restore_root,client):
     admin=auth(client,'admin');student=auth(client,'student')
     item=upload(client,admin).json()
-    scenario=client.get('/api/scenarios',headers=student).json()[0]
+    from test_workflows import assign_scenario
+    teacher=auth(client,'teacher')
+    scenario=next(x for x in client.get('/api/scenarios',headers=teacher).json() if x['mode']=='call' and x['published'])
+    assign_scenario(client,teacher,scenario['id'])
     run=client.post('/api/runs/'+str(scenario['id'])+'/start',headers=student).json()
     module=sys.modules['app.main']
     with module.SessionLocal() as session:

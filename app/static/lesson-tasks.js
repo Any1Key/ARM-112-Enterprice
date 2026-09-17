@@ -66,7 +66,7 @@ renderScenarios=function(){
  if(state.role!=='student')return renderScenariosBeforeTaskStatus();
  const query=$('scenario-search').value.toLocaleLowerCase();const target=$('scenarios');target.replaceChildren();
  const list=state.scenarios.filter(s=>(s.title+' '+s.category).toLocaleLowerCase().includes(query));
- if(!list.length){target.append(el('p','empty-table','Сценарии не найдены'));return;}
+ if(!list.length){target.append(el('p','empty-table',query?'По вашему поиску заданий нет.':'Нет назначенных заданий. Дождитесь назначения преподавателя или откройте «Занятия».'));return;}
  for(const scenario of list){
   const item=scenarioLessonTask(scenario.id);const completed=item?.task.status==='completed';
   const card=el('div',`scenario scenario-task${completed?' completed':''}${state.selected?.id===scenario.id?' active':''}`);card.dataset.scenarioId=scenario.id;

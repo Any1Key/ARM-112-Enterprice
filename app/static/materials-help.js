@@ -41,3 +41,8 @@ $('download-manual').addEventListener('click',guarded(async()=>{const document=a
 $('close-manual').addEventListener('click',()=>show('manual-reader',false));
 const logoutBeforeManualReader=logout;
 logout=function(){if(manualDocument)URL.revokeObjectURL(manualDocument.url);manualDocument=null;manualPending=null;$('manual-frame').removeAttribute('src');$('manual-new-tab').removeAttribute('href');show('manual-reader',false);show('manual-status',false);logoutBeforeManualReader();};
+
+
+const ticketCatalogNav=el('button','nav-item');ticketCatalogNav.id='ticket-catalog-nav';ticketCatalogNav.hidden=true;ticketCatalogNav.append(el('span','','▤'),document.createTextNode('Билеты и задачи'));ticketCatalogNav.addEventListener('click',guarded(async()=>{switchView('materials');await renderMaterials();$('ticket-controls').scrollIntoView({behavior:'smooth',block:'start'});}));document.querySelector('.sidebar nav').append(ticketCatalogNav);
+$('ticket-controls').prepend(el('h2','','Билеты и задачи из PDF'));
+const ticketAccessDomain=domainLoad;domainLoad=async function(){await ticketAccessDomain();ticketCatalogNav.hidden=state.role==='student';if(state.role==='student'){state.materials=null;$('ticket-list').replaceChildren();if(sourceUrl){URL.revokeObjectURL(sourceUrl);sourceUrl=null;}}};

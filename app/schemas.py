@@ -73,6 +73,13 @@ class LessonIn(BaseModel):
     student_ids: list[int] = Field(min_length=1,max_length=100)
     service_code: str = Field(default='TERRITORY',min_length=1,max_length=100)
 
+class LessonTemplateIn(LessonIn):
+    student_ids:list[int]=Field(default_factory=list,max_length=100)
+
+class TemplateAssignmentIn(BaseModel):
+    student_ids:list[int]=Field(min_length=1,max_length=100)
+    title:str|None=Field(default=None,min_length=1,max_length=300)
+
 class StatusIn(BaseModel):
     service_code: str = Field(min_length=1,max_length=100)
     status: str = Field(min_length=1,max_length=100)

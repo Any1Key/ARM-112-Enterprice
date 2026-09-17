@@ -9,7 +9,7 @@ from sqlalchemy import select, func, or_, and_, cast, String
 from sqlalchemy.orm import Session
 from app.models import (User, Scenario, SessionRun, Audit, ClassifierVersion, IncidentType,
                         ScenarioSettings, Material, Lesson, RunContext, CardEvent, ExpertReview, AccountState, AiJob, SipAccount, VoipCall, CardAttachment, TrainingMessage)
-from app.schemas import (CardIn, DraftIn, ResolveIn, SettingsIn, LessonIn, StatusIn,
+from app.schemas import (CardIn, DraftIn, ResolveIn, SettingsIn, LessonIn, LessonTemplateIn, TemplateAssignmentIn, StatusIn,
                          WorkCallIn, ReviewIn, UserIn, UserUpdateIn)
 from app.classifier import active_workbook, parse_workbook, resolve_rules, FLAGS, SERVICE_NAMES
 from app.training import available_statuses, card_indicator, REJECTED, REFUSED, TERMINAL
@@ -62,25 +62,47 @@ def import_materials(s):
 def settings_for(s,scenario):
     return s.get(ScenarioSettings,scenario.id)
 
-def check_scenario_access(s,u,scenario,*,explicit_sms=False):
+def check_scenario_access(s,u,scenario,*,explicit_sms=False,for_listing=False):
     settings=settings_for(s,scenario)
     if u.role=='student':
         if settings and not settings.published: raise HTTPException(403,'Сценарий не утверждён преподавателем')
         assigned=list(s.scalars(select(Lesson)))
-        # When teachers assign lessons to a student, only their assigned scenarios
-        # are available. Standalone demo practice remains possible before assignment.
-        own=[lesson for lesson in assigned if u.id in lesson.student_ids]
+        # Students always need a teacher assignment, including their first task.
+        own=[lesson for lesson in assigned if lesson.status!='template' and u.id in lesson.student_ids]
         if explicit_sms and settings and settings.mode=='dispatch':
             raise HTTPException(422,'Для SMS выберите сценарий карточки 112, а не ДДС')
-        if settings and settings.mode=='dispatch' and not any(lesson.status=='active' and scenario.id in lesson.scenario_ids for lesson in own):
+        if settings and settings.mode=='dispatch' and not any((for_listing or lesson.status=='active') and scenario.id in lesson.scenario_ids for lesson in own):
             raise HTTPException(403,'Карточка ДДС доступна в назначенном активном занятии')
         # A teacher-directed SMS is an explicit assignment independent of lessons.
         # Persisted messages also authorize acceptance and resuming a skipped card.
         sms_assigned=explicit_sms or s.scalar(select(TrainingMessage.id).where(
             TrainingMessage.student_id==u.id,TrainingMessage.scenario_id==scenario.id
         ).limit(1)) is not None
-        if own and not sms_assigned and not any(lesson.status=='active' and scenario.id in lesson.scenario_ids for lesson in own):
+        if not sms_assigned and not any((for_listing or lesson.status=='active') and scenario.id in lesson.scenario_ids for lesson in own):
             raise HTTPException(403,'Сценарий не назначен вам на активном занятии')
+
+def archive_unassigned_runs(s,student_id=None):
+    query=select(SessionRun).where(SessionRun.finished_at.is_(None))
+    if student_id is not None:query=query.where(SessionRun.student_id==student_id)
+    changed=0
+    for run in s.scalars(query.with_for_update()):
+        student=s.get(User,run.student_id);scenario=s.get(Scenario,run.scenario_id)
+        if not student or not scenario:continue
+        try:check_scenario_access(s,student,scenario)
+        except HTTPException:
+            context=s.get(RunContext,run.id);closed_at=now();elapsed=elapsed_seconds(run,context,closed_at)
+            run.finished_at=closed_at;run.score=None
+            run.report={'run_id':run.id,'skipped':True,'assignment_removed':True,'elapsed_seconds':elapsed,'note':'Обработка закрыта без оценки: нет действующего назначения преподавателя. Сведения сохранены в истории.'}
+            s.add(CardEvent(run_id=run.id,user_id=student.id,kind='card.assignment_removed',data={'elapsed_seconds':elapsed}))
+            log(s,student,'run.assignment_removed',{'run_id':run.id});changed+=1
+            for call in s.scalars(select(VoipCall).where(VoipCall.run_id==run.id,VoipCall.state.in_(['queued','ringing','answered']))):
+                call.state='cancelled';call.ended_at=closed_at
+                if call.channel:
+                    from app.telephony import ami_action
+                    try:ami_action('Hangup',Channel=call.channel)
+                    except (OSError,ConnectionError):pass
+    if changed:s.commit()
+    return changed
 
 def assert_teacher(u):
     if u.role!='teacher': raise HTTPException(403,'Функция доступна преподавателю')
@@ -147,6 +169,9 @@ def get_run(s,u,run_id,write=False):
 
 def ensure_writable(run,context,s):
     if run.finished_at: raise HTTPException(409,'Тренировка завершена')
+    if not context or not context.lesson_id:
+        student=s.get(User,run.student_id);scenario=s.get(Scenario,run.scenario_id)
+        if student and scenario:check_scenario_access(s,student,scenario)
     if context and context.lesson_id:
         lesson=s.get(Lesson,context.lesson_id)
         if lesson.status!='active': raise HTTPException(409,'Преподаватель завершил занятие')
@@ -517,9 +542,42 @@ def register_routes(app,db,current,evaluate,pwd):
         for key,value in x.model_dump().items():setattr(lesson,key,value)
         log(s,u,'lesson.update',{'lesson_id':lesson.id});s.commit();return {'id':lesson.id}
 
+    @app.get('/api/lesson-templates')
+    def lesson_templates(u=Depends(current),s=Depends(db)):
+        assert_teacher(u)
+        return [{'id':x.id,'title':x.title,'status':x.status,'mode':x.mode,'scenario_ids':x.scenario_ids,'student_ids':x.student_ids,'service_code':x.service_code}
+                for x in s.scalars(select(Lesson).where(Lesson.teacher_id==u.id,Lesson.status=='template').order_by(Lesson.id.desc()))]
+
+    @app.post('/api/lesson-templates')
+    def create_template(x:LessonTemplateIn,u=Depends(current),s=Depends(db)):
+        assert_teacher(u);validate_lesson(x,u,s)
+        row=Lesson(**x.model_dump(),teacher_id=u.id,status='template');s.add(row);s.flush()
+        log(s,u,'lesson.template.create',{'template_id':row.id});s.commit();return {'id':row.id}
+
+    @app.put('/api/lesson-templates/{template_id}')
+    def update_template(template_id:int,x:LessonTemplateIn,u=Depends(current),s=Depends(db)):
+        assert_teacher(u)
+        row=s.scalar(select(Lesson).where(Lesson.id==template_id).with_for_update())
+        if not row or row.status!='template':raise HTTPException(404,'Заготовка не найдена')
+        if row.teacher_id!=u.id:raise HTTPException(403)
+        validate_lesson(x,u,s)
+        for key,value in x.model_dump().items():setattr(row,key,value)
+        log(s,u,'lesson.template.update',{'template_id':row.id});s.commit();return {'id':row.id}
+
+    @app.post('/api/lesson-templates/{template_id}/assign')
+    def assign_template(template_id:int,x:TemplateAssignmentIn,u=Depends(current),s=Depends(db)):
+        assert_teacher(u)
+        template=s.get(Lesson,template_id)
+        if not template or template.status!='template':raise HTTPException(404,'Заготовка не найдена')
+        if template.teacher_id!=u.id:raise HTTPException(403)
+        payload=LessonIn(title=x.title or template.title,mode=template.mode,scenario_ids=list(template.scenario_ids),student_ids=x.student_ids,service_code=template.service_code)
+        validate_lesson(payload,u,s)
+        lesson=Lesson(**payload.model_dump(),teacher_id=u.id);s.add(lesson);s.flush()
+        log(s,u,'lesson.template.assign',{'template_id':template.id,'lesson_id':lesson.id});s.commit();return {'id':lesson.id}
+
     @app.get('/api/lessons')
     def lessons(u=Depends(current),s=Depends(db)):
-        query=select(Lesson).order_by(Lesson.id.desc())
+        query=select(Lesson).where(Lesson.status!='template').order_by(Lesson.id.desc())
         if u.role=='teacher': query=query.where(Lesson.teacher_id==u.id)
         rows=[]
         for lesson in s.scalars(query):
@@ -624,6 +682,7 @@ def register_routes(app,db,current,evaluate,pwd):
     @app.get('/api/active-run')
     def active_run(u=Depends(current),s=Depends(db)):
         if u.role!='student': return None
+        archive_unassigned_runs(s,u.id)
         run=s.scalar(select(SessionRun).where(SessionRun.student_id==u.id,SessionRun.finished_at.is_(None)).order_by(SessionRun.id.desc()))
         return run_payload(s,run,s.get(RunContext,run.id)) if run else None
 
