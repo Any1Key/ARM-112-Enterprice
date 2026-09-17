@@ -170,7 +170,7 @@ def register_extensions(app,db,current):
         if u.role not in ('teacher','admin'):raise HTTPException(403)
         student=s.get(User,x.student_id);scenario=s.get(Scenario,x.scenario_id)
         if not student or student.role!='student' or not scenario or (u.role=='teacher' and scenario.created_by!=u.id):raise HTTPException(404)
-        check_scenario_access(s,student,scenario)
+        check_scenario_access(s,student,scenario,explicit_sms=True)
         coordinates={k:getattr(x,k) for k in ('latitude','longitude') if getattr(x,k) is not None}
         # Further messages for the same caller go to the still-open SMS card.
         previous=s.scalar(select(TrainingMessage).where(TrainingMessage.student_id==student.id,TrainingMessage.aon==x.aon,TrainingMessage.run_id.is_not(None)).order_by(TrainingMessage.id.desc()))

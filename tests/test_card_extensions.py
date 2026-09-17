@@ -139,3 +139,35 @@ def test_unanswered_multi_question_is_graded_without_server_error():
     result=grade_answers(report,{'questionnaire_answers':{'1':{'fire_objects':['квартира','подъезд']}}},CardIn(questionnaire_answers={'1':{'fire_objects':None}}))
     assert result['parts']['Опросная карта']==0
     assert result['questionnaire_checks'][0]['correct'] is False
+
+
+def test_teacher_sms_assigns_scenario_despite_other_lesson_and_resumes(client):
+    student,teacher=auth(client,'student'),auth(client,'teacher')
+    other=create_scenario(client,teacher)
+    lesson=client.post('/api/lessons',headers=teacher,json={'title':'Другое занятие','mode':'call','scenario_ids':[other],'student_ids':[3],'service_code':'112'})
+    assert lesson.status_code==200,lesson.text
+    scenario=create_scenario(client,teacher)
+    assert client.post(f'/api/runs/{scenario}/start',headers=student).status_code==403
+    message={'student_id':3,'scenario_id':scenario,'aon':'+7 921 555 18 42','text':'Не могу говорить, нужна помощь.'}
+    incoming=client.post('/api/sms/incoming',headers=teacher,json=message)
+    assert incoming.status_code==200,incoming.text
+    assert client.put('/api/operator/presence',headers=student,json={'state':'available'}).status_code==200
+    accepted=client.post(f"/api/sms/{incoming.json()['id']}/accept",headers=student)
+    assert accepted.status_code==200,accepted.text
+    run=accepted.json();assert run['card']['channel']=='SMS'
+    assert client.post(f"/api/runs/{run['run_id']}/skip",headers=student).status_code==200
+    resumed=client.post(f'/api/runs/{scenario}/start',headers=student)
+    assert resumed.status_code==200 and resumed.json()['run_id']==run['run_id']
+    assert client.post(f"/api/runs/{run['run_id']}/skip",headers=student).status_code==200
+    unassigned=create_scenario(client,teacher)
+    assert client.post(f'/api/runs/{unassigned}/start',headers=student).status_code==403
+
+
+def test_sms_does_not_assign_unpublished_or_dispatch_scenarios(client):
+    teacher=auth(client,'teacher')
+    message={'student_id':3,'aon':'+7 921 555 18 42','text':'Нужна помощь.'}
+    unpublished=create_scenario(client,teacher,published=False)
+    assert client.post('/api/sms/incoming',headers=teacher,json={**message,'scenario_id':unpublished}).status_code==403
+    dispatch=create_scenario(client,teacher,mode='dispatch')
+    response=client.post('/api/sms/incoming',headers=teacher,json={**message,'scenario_id':dispatch})
+    assert response.status_code==422

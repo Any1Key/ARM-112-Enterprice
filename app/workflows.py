@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select, func, or_, and_, cast, String
 from sqlalchemy.orm import Session
 from app.models import (User, Scenario, SessionRun, Audit, ClassifierVersion, IncidentType,
-                        ScenarioSettings, Material, Lesson, RunContext, CardEvent, ExpertReview, AccountState, AiJob, SipAccount, VoipCall, CardAttachment)
+                        ScenarioSettings, Material, Lesson, RunContext, CardEvent, ExpertReview, AccountState, AiJob, SipAccount, VoipCall, CardAttachment, TrainingMessage)
 from app.schemas import (CardIn, DraftIn, ResolveIn, SettingsIn, LessonIn, StatusIn,
                          WorkCallIn, ReviewIn, UserIn, UserUpdateIn)
 from app.classifier import active_workbook, parse_workbook, resolve_rules, FLAGS, SERVICE_NAMES
@@ -62,7 +62,7 @@ def import_materials(s):
 def settings_for(s,scenario):
     return s.get(ScenarioSettings,scenario.id)
 
-def check_scenario_access(s,u,scenario):
+def check_scenario_access(s,u,scenario,*,explicit_sms=False):
     settings=settings_for(s,scenario)
     if u.role=='student':
         if settings and not settings.published: raise HTTPException(403,'Сценарий не утверждён преподавателем')
@@ -70,9 +70,16 @@ def check_scenario_access(s,u,scenario):
         # When teachers assign lessons to a student, only their assigned scenarios
         # are available. Standalone demo practice remains possible before assignment.
         own=[lesson for lesson in assigned if u.id in lesson.student_ids]
+        if explicit_sms and settings and settings.mode=='dispatch':
+            raise HTTPException(422,'Для SMS выберите сценарий карточки 112, а не ДДС')
         if settings and settings.mode=='dispatch' and not any(lesson.status=='active' and scenario.id in lesson.scenario_ids for lesson in own):
             raise HTTPException(403,'Карточка ДДС доступна в назначенном активном занятии')
-        if own and not any(lesson.status=='active' and scenario.id in lesson.scenario_ids for lesson in own):
+        # A teacher-directed SMS is an explicit assignment independent of lessons.
+        # Persisted messages also authorize acceptance and resuming a skipped card.
+        sms_assigned=explicit_sms or s.scalar(select(TrainingMessage.id).where(
+            TrainingMessage.student_id==u.id,TrainingMessage.scenario_id==scenario.id
+        ).limit(1)) is not None
+        if own and not sms_assigned and not any(lesson.status=='active' and scenario.id in lesson.scenario_ids for lesson in own):
             raise HTTPException(403,'Сценарий не назначен вам на активном занятии')
 
 def assert_teacher(u):
