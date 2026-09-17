@@ -9,14 +9,96 @@ async function domainLoad(){const [classifier,lessons]=await Promise.all([api('/
 }
 function collectFlags(){const flags={victims:$('victims').checked,access_blocked:$('access-blocked').checked,life_danger:$('danger').checked};document.querySelectorAll('#incident-form [data-flag]').forEach(input=>flags[input.dataset.flag]=input.checked);return flags;}
 function collectCard(){const card={classifier_ids:state.selectedTypes.map(type=>type.id),services:[...state.manualServices,...$('extra-services').value.split(',').map(x=>x.trim()).filter(Boolean)],flags:collectFlags(),victims:$('victims').checked,access_blocked:$('access-blocked').checked,life_danger:$('danger').checked};for(const [field,id] of Object.entries(cardFields))card[field]=$(id).value.trim();for(const [field,id] of Object.entries({important:'important',emergency:'emergency',incident_alert:'incident-alert',no_contact:'no-contact',call_lost:'call-lost'}))card[field]=$(id).checked;return card;}
-function resetClassifier(){state.selectedTypes=[];state.automaticServices=[];state.manualServices=new Set();state.registered=false;state.revision=0;state.pendingDraft=null;state.mode='call';$('selected-classifications').replaceChildren();$('classifier-matches').replaceChildren();$('feature-picker').replaceChildren();$('classifier-search').value='';$('classifier-category').value='';$('incident').readOnly=false;show('classifier-extra',false);renderDispatch();}
+function resetClassifier(){clearTimeout(searchTimeout);++searchSequence;++categorySequence;state.resolveGeneration=(state.resolveGeneration||0)+1;state.categoryTypes=[];state.featureChoices=[];state.classifierAdding=false;state.selectedTypes=[];state.automaticServices=[];state.manualServices=new Set();state.registered=false;state.revision=0;state.pendingDraft=null;state.mode='call';$('selected-classifications').replaceChildren();$('classifier-matches').replaceChildren();$('feature-picker').replaceChildren();$('classifier-search').value='';$('classifier-category').value='';$('incident').readOnly=false;show('classifier-extra',false);show('feature-picker',true);updateClassifierMode();renderDispatch();}
 function renderDispatch(){const all=new Map(state.automaticServices.filter(service=>service.visible).map(service=>[service.code,service]));for(const [code,name] of services)if(!all.has(code))all.set(code,{code,name});for(const code of state.manualServices)if(!all.has(code))all.set(code,{code,name:code});$('service-options').replaceChildren();for(const service of all.values()){const required=state.automaticServices.some(x=>x.code===service.code);const label=el('label','service-option');label.title=required?'Добавлена автоматически по ЕКП. Удаление недоступно.':'Дополнительная служба';const input=el('input');input.type='checkbox';input.value=service.code;input.checked=required||state.manualServices.has(service.code);input.disabled=required;input.addEventListener('change',()=>{if(input.checked)state.manualServices.add(service.code);else state.manualServices.delete(service.code);scheduleDraft();});label.append(input,el('span','',`${service.code} · ${service.name}`));$('service-options').append(label);}}
-async function resolveSelection(){const generation=(state.resolveGeneration||0)+1;state.resolveGeneration=generation;const identifiers=state.selectedTypes.map(type=>type.id);const result=await api('/api/classifier/resolve',{method:'POST',body:JSON.stringify({classifier_ids:identifiers,flags:collectFlags()})});if(generation!==state.resolveGeneration||identifiers.join()!==state.selectedTypes.map(type=>type.id).join())return;state.automaticServices=result.services;$('incident').value=result.classifications.map(type=>type.title).join('; ');$('incident').readOnly=identifiers.length>0;$('selected-classifications').replaceChildren();for(const type of state.selectedTypes){const block=el('div','selected-type');const header=el('header');header.append(el('b','',`${type.code} · ${type.title}`));const remove=el('button','','×');remove.type='button';remove.setAttribute('aria-label','Убрать тип '+type.title);remove.addEventListener('click',guarded(async()=>{state.selectedTypes=state.selectedTypes.filter(x=>x.id!==type.id);await resolveSelection();}));header.append(remove);block.append(header,el('p','',type.features.filter(Boolean).join(' → ')));$('selected-classifications').append(block);}const questions=state.selectedTypes.map(type=>type.extra_questions).filter(Boolean);$('classifier-extra').textContent=questions.join('\n');show('classifier-extra',questions.length>0);renderDispatch();scheduleDraft();}
-function selectType(type){if(state.selectedTypes.some(x=>x.id===type.id))return;if(state.selectedTypes.length>=10){notify('В карточке можно выбрать до 10 типов происшествий.');return;}state.selectedTypes.push(type);$('classifier-matches').replaceChildren();resolveSelection().catch(error=>notify(error.message));}
-let searchSequence=0,searchTimeout;
-$('classifier-search').addEventListener('input',()=>{clearTimeout(searchTimeout);const sequence=++searchSequence;searchTimeout=setTimeout(async()=>{try{const query=$('classifier-search').value.trim();if(!query){$('classifier-matches').replaceChildren();return;}const types=await api('/api/classifier/types?q='+encodeURIComponent(query));if(sequence!==searchSequence)return;$('classifier-matches').replaceChildren();for(const type of types){const button=el('button','type-match',`${type.code} · ${type.title}`);button.type='button';button.addEventListener('click',()=>selectType(type));$('classifier-matches').append(button);}}catch(error){notify(error.message);}},250);});
-$('classifier-category').addEventListener('change',guarded(async()=>{const category=$('classifier-category').value;state.categoryTypes=category?await api('/api/classifier/types?limit=1500&category='+encodeURIComponent(category)):[];renderFeatures([]);}));
-function renderFeatures(selected){$('feature-picker').replaceChildren();for(let level=0;level<3;level++){const subset=state.categoryTypes.filter(type=>selected.every((value,index)=>type.features[index]===value));const values=[...new Set(subset.map(type=>type.features[level]))];if(level>selected.length)break;if(values.length===1&&values[0]==='')break;const group=el('div','feature-group');group.append(el('small','',`Признак ${level+1}`));const options=el('div','feature-options');for(const value of values){const button=el('button','feature-option'+(selected[level]===value?' selected':''),value||'Без дополнительного признака');button.type='button';button.addEventListener('click',()=>{const choices=[...selected.slice(0,level),value];renderFeatures(choices);const matches=state.categoryTypes.filter(type=>choices.every((choice,index)=>type.features[index]===choice));if(matches.length===1)selectType(matches[0]);});options.append(button);}group.append(options);$('feature-picker').append(group);}const matching=state.categoryTypes.filter(type=>selected.every((value,index)=>type.features[index]===value));if(selected.length&&matching.length<=12){const group=el('div','feature-group');group.append(el('small','','Итоговый тип происшествия'));for(const type of matching){const button=el('button','type-match',type.title);button.type='button';button.addEventListener('click',()=>selectType(type));group.append(button);}$('feature-picker').append(group);}}
+async function resolveSelection(){const generation=(state.resolveGeneration||0)+1;state.resolveGeneration=generation;const identifiers=state.selectedTypes.map(type=>type.id);const result=await api('/api/classifier/resolve',{method:'POST',body:JSON.stringify({classifier_ids:identifiers,flags:collectFlags()})});if(generation!==state.resolveGeneration||identifiers.join()!==state.selectedTypes.map(type=>type.id).join())return;state.automaticServices=result.services;$('incident').value=result.classifications.map(type=>type.title).join('; ');$('incident').readOnly=identifiers.length>0;$('selected-classifications').replaceChildren();for(const type of state.selectedTypes){const block=el('div','selected-type');const header=el('header');header.append(el('b','',`${type.code} · ${type.title}`));const remove=el('button','','×');remove.type='button';remove.setAttribute('aria-label','Убрать тип '+type.title);remove.addEventListener('click',guarded(async()=>{state.selectedTypes=state.selectedTypes.filter(x=>x.id!==type.id);await resolveSelection();}));header.append(remove);block.append(header,el('p','',type.features.filter(Boolean).join(' → ')));$('selected-classifications').append(block);}const questions=state.selectedTypes.map(type=>type.extra_questions).filter(Boolean);$('classifier-extra').textContent=questions.join('\n');show('classifier-extra',questions.length>0);renderDispatch();updateClassifierMode();scheduleDraft();}
+let searchSequence=0,searchTimeout,categorySequence=0;
+function updateClassifierMode(){
+ const adding=Boolean(state.classifierAdding);
+ $('classifier-add').textContent=adding?'Отменить добавление':'Добавить ещё один класс';
+ show('classifier-add',state.selectedTypes.length>0);
+ $('classifier-status').textContent=adding?'Следующий выбор добавит ещё один класс.':state.selectedTypes.length>1?'Следующий выбор заменит все выбранные классы. Для добавления используйте кнопку слева.':'Выбор типа заменяет текущий класс. Службы подбираются автоматически.';
+}
+function classifierTypeButton(type){
+ const chosen=state.selectedTypes.some(item=>item.id===type.id);
+ const button=el('button','type-match'+(chosen?' selected':''),`${type.code} · ${type.title}`);
+ button.type='button';button.setAttribute('aria-pressed',String(chosen));
+ button.title=`${type.category} · ${type.features.filter(Boolean).join(' → ')}`;
+ button.addEventListener('click',guarded(async()=>{await selectType(type);}));
+ return button;
+}
+async function selectType(type){
+ const previous=state.selectedTypes;
+ if(state.classifierAdding){
+  if(state.selectedTypes.some(item=>item.id===type.id)){state.classifierAdding=false;updateClassifierMode();return;}
+  if(state.selectedTypes.length>=10){notify('В карточке можно выбрать до 10 типов происшествий.');return;}
+  state.selectedTypes=[...state.selectedTypes,type];
+ }else state.selectedTypes=[type];
+ state.classifierAdding=false;updateClassifierMode();
+ const selection=state.selectedTypes;
+ try{await resolveSelection();}catch(error){if(state.selectedTypes===selection){state.selectedTypes=previous;updateClassifierMode();}throw error;}
+ if($('classifier-search').value.trim())await searchClassifier();
+ else renderFeatures(state.featureChoices||[]);
+}
+$('classifier-add').addEventListener('click',()=>{state.classifierAdding=!state.classifierAdding;updateClassifierMode();$('classifier-search').focus();});
+async function searchClassifier(){
+ const sequence=++searchSequence;
+ const query=$('classifier-search').value.trim(),category=$('classifier-category').value;
+ $('classifier-matches').replaceChildren();
+ show('feature-picker',!query);
+ if(!query){renderFeatures(state.featureChoices||[]);return;}
+ $('classifier-matches').append(el('p','classifier-message','Поиск…'));
+ try{
+  const types=await api('/api/classifier/types?limit=81&q='+encodeURIComponent(query)+'&category='+encodeURIComponent(category));
+  if(sequence!==searchSequence)return;
+  $('classifier-matches').replaceChildren();
+  if(!types.length){$('classifier-matches').append(el('p','classifier-message',category?'В этой группе ничего не найдено. Измените запрос или выберите «Все группы».':'Типы не найдены. Измените название или код.'));return;}
+  for(const type of types.slice(0,80))$('classifier-matches').append(classifierTypeButton(type));
+  if(types.length>80)$('classifier-matches').append(el('p','classifier-message','Показаны первые 80 типов. Уточните запрос или группу.'));
+ }catch(error){if(sequence===searchSequence){$('classifier-matches').replaceChildren(el('p','classifier-message','Не удалось загрузить типы. Повторите поиск.'));notify(error.message);}}
+}
+$('classifier-search').addEventListener('input',()=>{clearTimeout(searchTimeout);++searchSequence;searchTimeout=setTimeout(()=>searchClassifier(),250);});
+$('classifier-category').addEventListener('change',guarded(async()=>{
+ const sequence=++categorySequence,category=$('classifier-category').value;
+ state.categoryTypes=[];state.featureChoices=[];renderFeatures([]);
+ clearTimeout(searchTimeout);await searchClassifier();
+ if(!category)return;
+ $('feature-picker').replaceChildren(el('p','classifier-message','Загрузка опросной карты…'));
+ const types=await api('/api/classifier/types?limit=1500&category='+encodeURIComponent(category));
+ if(sequence!==categorySequence||category!==$('classifier-category').value)return;
+ state.categoryTypes=types;renderFeatures([]);
+}));
+function renderFeatures(selected){
+ state.featureChoices=selected;
+ $('feature-picker').replaceChildren();
+ if(!state.categoryTypes.length)return;
+ for(let level=0;level<3&&level<=selected.length;level++){
+  // Only earlier choices constrain this level; siblings remain available.
+  const prefix=selected.slice(0,level);
+  const subset=state.categoryTypes.filter(type=>prefix.every((value,index)=>type.features[index]===value));
+  const values=[...new Set(subset.map(type=>type.features[level]||''))];
+  if(!values.length||(values.length===1&&values[0]===''))break;
+  const group=el('div','feature-group');group.append(el('small','',`Признак ${level+1}`));
+  const options=el('div','feature-options');
+  for(const value of values){
+   const active=selected[level]===value;
+   const button=el('button','feature-option'+(active?' selected':''),value||'Без дополнительного признака');
+   button.type='button';button.setAttribute('aria-pressed',String(active));
+   button.addEventListener('click',()=>renderFeatures([...selected.slice(0,level),value]));
+   options.append(button);
+  }
+  group.append(options);$('feature-picker').append(group);
+ }
+ const matching=state.categoryTypes.filter(type=>selected.every((value,index)=>type.features[index]===value));
+ if(selected.length||matching.length<=12||!$('feature-picker').children.length){
+  const group=el('div','feature-group classifier-results');
+  group.append(el('small','',`Подходящие итоговые типы: ${matching.length}. Нажмите нужный тип.`));
+  for(const type of matching.slice(0,80))group.append(classifierTypeButton(type));
+  if(matching.length>80)group.append(el('p','classifier-message','Уточните признаки или используйте поиск, чтобы сузить список.'));
+  $('feature-picker').append(group);
+ }
+}
+
 $('incident-form').addEventListener('change',guarded(async event=>{if(event.target.type==='checkbox'&&!event.target.closest('#service-options')&&state.selectedTypes.length)await resolveSelection();}));
 function draftKey(){return `arm112-draft:${state.username}:${state.runId}`;}
 function clearDraftCache(){if(state.runId)sessionStorage.removeItem(draftKey());clearTimeout(state.draftTimeout);}
