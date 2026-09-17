@@ -8,3 +8,4 @@ backups/
 .agents/
 .codex/
 *:Zone.Identifier
+.github-auth/
