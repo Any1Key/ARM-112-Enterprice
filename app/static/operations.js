@@ -7,3 +7,25 @@ backupButton.addEventListener('click',async()=>{backupButton.disabled=true;try{a
 async function loadOperations(){const data=await api('/api/operations');const names={postgresql:'PostgreSQL',redis:'Redis',asterisk:'Asterisk',voice:'Русский голос',ml:'Нейросетевая оценка',grammar:'Грамматика',ollama:'Генерация сценариев',backup:'Резервная копия'};table(opsTable,['Компонент','Состояние','Детали'],Object.entries(data.components).map(([name,value])=>[names[name],value.status==='ok'?'Работает':value.status==='stale'?'Копия устарела':value.status==='missing'?'Копия отсутствует':value.status==='incomplete'?'Копия неполная':'Недоступен',name==='backup'?`Возраст: ${value.age_seconds??'—'} с · размер: ${value.size_bytes==null?'—':(value.size_bytes/1048576).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+' МБ'}`:value.reason||'']));const backup=data.components.backup;backupButton.disabled=backup.running||backup.queued||!backup.scheduler_alive;backupInfo.textContent=`Автоматически каждые ${backup.interval_hours} ч · база данных, аудио и вложения · ${backup.running?'Создаётся копия':backup.queued?'Ожидает запуска':!backup.scheduler_alive?'Сервис резервирования недоступен':backup.last_failed?'Последняя попытка не удалась; сервис повторит запуск':'Готово к запуску'}${backup.restore_check.verified_at?' · Восстановление проверено '+new Date(backup.restore_check.verified_at).toLocaleString('ru-RU')+(backup.restore_check.bundle===backup.bundle?' (текущая копия)':' (предыдущая копия)'):''}`;opsTable.append(el('p','source-meta',`Активных сессий: ${data.active_runs} · пользователей: ${data.users} · событий аудита: ${data.audit_events} · RAM приложения: ${data.process_ram_mb==null?'—':data.process_ram_mb.toLocaleString('ru-RU')+' МБ'} · CPU приложения: ${data.process_cpu_percent==null?'измеряется…':data.process_cpu_percent.toLocaleString('ru-RU')+' %'}`));}
 opsSection.append(el('p','source-meta','RAM — текущая оперативная память приложения. CPU — нагрузка приложения за последнюю секунду; 100% соответствует одному ядру. Показатели других контейнеров сюда не входят.'));
 setInterval(()=>{opsNav.hidden=state.role!=='admin';if(state.token&&state.role==='admin'&&!opsSection.hidden)loadOperations().catch(()=>{});},5000);
+
+const backupsDetails=el('details','panel');backupsDetails.id='backup-history';
+const backupsSummary=el('summary','','Резервные копии БД');
+const backupsList=el('div','table-panel');
+backupsDetails.append(backupsSummary,el('p','source-meta','Даты показаны по времени вашего компьютера. «Скачать БД» сохраняет только базу, без аудио и вложений. Полные копии хранятся на сервере.'),backupsList);opsSection.append(backupsDetails);
+let backupsLoading=false;
+const backupMegabytes=value=>value==null?'—':(value/1048576).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+' МБ';
+async function loadBackupHistory(){
+ if(backupsLoading)return;backupsLoading=true;
+ try{const items=await api('/api/operations/backups');backupsSummary.textContent=`Резервные копии БД (${items.length})`;
+ table(backupsList,['Дата и время','Состав','Размер копии','База данных','Состояние','Действия'],items.map(item=>{
+ const button=el('button','button','Скачать БД');button.disabled=!item.complete;
+ button.addEventListener('click',async()=>{button.disabled=true;try{
+ const response=await fetch(`/api/operations/backups/${encodeURIComponent(item.id)}/database`,{headers:{Authorization:'Bearer '+state.token}});
+ if(!response.ok)throw new Error('Не удалось скачать базу. Обновите список и повторите попытку.');
+ const blob=await response.blob();const url=URL.createObjectURL(blob);const anchor=el('a');anchor.href=url;anchor.download=item.id.endsWith('.dump')?item.id:item.id+'.dump';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),10000);
+ }catch(error){notify(error.message);}finally{button.disabled=!item.complete;}});
+ return [new Date(item.created_at).toLocaleString('ru-RU'),item.scope.includes('media')?'БД, аудио и вложения':'Только БД',backupMegabytes(item.size_bytes),backupMegabytes(item.database_size_bytes),item.complete?'Готова':'Неполная',button];}));
+ }finally{backupsLoading=false;}
+}
+backupsDetails.addEventListener('toggle',()=>{if(backupsDetails.open)loadBackupHistory().catch(error=>notify(error.message));});
+setInterval(()=>{if(state.token&&state.role==='admin'&&!opsSection.hidden&&backupsDetails.open)loadBackupHistory().catch(()=>{});},5000);

@@ -56,3 +56,35 @@ def test_cpu_percentage_uses_elapsed_time_and_supports_multiple_cores():
     assert metrics['process_ram_mb']>0
     assert 'process_max_rss_kb' not in metrics
     assert 'process_cpu_seconds' not in metrics
+
+
+def test_backup_history_download_and_path_protection(client,tmp_path,monkeypatch):
+    monkeypatch.setenv('BACKUP_ROOT',str(tmp_path))
+    bundle='arm112_20260917T185310Z_683'
+    folder=tmp_path/bundle
+    folder.mkdir()
+    for name in ('database.dump','media.tar.gz','runtime.tar.gz','SHA256SUMS'):
+        (folder/name).write_bytes(b'backup-content')
+    (folder/'manifest.json').write_text(json.dumps({'created_at':'2026-09-17T18:53:10Z'}))
+    (tmp_path/'arm112_20260916T154127Z.dump').write_bytes(b'legacy-dump')
+    (tmp_path/'latest.dump').write_bytes(b'duplicate')
+    (tmp_path/'.partial_unfinished').mkdir()
+    (tmp_path/'arm112_secret.dump').symlink_to(tmp_path/'latest.dump')
+    student=auth(client,'student');admin=auth(client,'admin')
+    assert client.get('/api/operations/backups',headers=student).status_code==403
+    assert client.get(f'/api/operations/backups/{bundle}/database',headers=student).status_code==403
+    items=client.get('/api/operations/backups',headers=admin).json()
+    assert len(items)==2
+    full=next(item for item in items if item['id']==bundle)
+    assert full['created_at']=='2026-09-17T18:53:10+00:00'
+    assert full['scope']==['database','media','runtime']
+    downloaded=client.get(f'/api/operations/backups/{bundle}/database',headers=admin)
+    assert downloaded.content==b'backup-content'
+    assert downloaded.headers['cache-control']=='no-store'
+    assert bundle+'.dump' in downloaded.headers['content-disposition']
+    assert client.get('/api/operations/backups/latest.dump/database',headers=admin).status_code==404
+    assert client.get('/api/operations/backups/arm112_secret.dump/database',headers=admin).status_code==404
+    (folder/'runtime.tar.gz').unlink()
+    assert client.get(f'/api/operations/backups/{bundle}/database',headers=admin).status_code==404
+    events=client.get('/api/audit',headers=admin).json()
+    assert len([event for event in events if event['action']=='backup.download'])==1

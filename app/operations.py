@@ -1,11 +1,12 @@
 """Admin-only live component health and backup freshness."""
-import os,time,json
+import os,time,json,re
 from threading import Lock,Thread
 from pathlib import Path
 from datetime import datetime,timezone
 from concurrent.futures import ThreadPoolExecutor
 import httpx,redis
 from fastapi import Depends,HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy import select,func
 from app.models import User,SessionRun,Audit
 from app.telephony import ami_action
@@ -67,6 +68,26 @@ def backup_snapshot(root=None):
             'last_failed':(root/'last_error').exists(),'restore_check':read_json('last_restore_check.json'),
             'bundle':bundle if valid else None,'interval_hours':int(os.getenv('BACKUP_INTERVAL_HOURS','23'))}
 
+def backup_catalog(root=None):
+    root=Path(root or os.getenv('BACKUP_ROOT','/backups')).resolve()
+    entries=[]
+    try:children=list(root.iterdir())
+    except OSError:return entries
+    for child in children:
+        if child.is_symlink() or not re.fullmatch(r'arm112_[A-Za-z0-9_]+(?:\.dump)?',child.name):continue
+        try:
+            if child.is_file() and child.suffix=='.dump':
+                entries.append({'id':child.name,'created_at':datetime.fromtimestamp(child.stat().st_mtime,timezone.utc).isoformat(),'size_bytes':child.stat().st_size,'database_size_bytes':child.stat().st_size,'scope':['database'],'complete':True})
+            elif child.is_dir():
+                meta=json.loads((child/'manifest.json').read_text())
+                created=datetime.fromisoformat(meta['created_at'].replace('Z','+00:00')).astimezone(timezone.utc).isoformat()
+                names=('database.dump','media.tar.gz','runtime.tar.gz','SHA256SUMS','manifest.json')
+                complete=all((child/name).is_file() and not (child/name).is_symlink() and (child/name).stat().st_size>0 for name in names)
+                database=child/'database.dump'
+                entries.append({'id':child.name,'created_at':created,'size_bytes':sum((child/name).stat().st_size for name in names[:3] if (child/name).is_file()),'database_size_bytes':database.stat().st_size if database.is_file() else None,'scope':['database','media','runtime'],'complete':complete})
+        except (OSError,ValueError,TypeError,KeyError,AttributeError):continue
+    return sorted(entries,key=lambda entry:entry['created_at'],reverse=True)
+
 def register_operations(app,db,current):
     @app.get('/api/operations')
     def operations(u=Depends(current),s=Depends(db)):
@@ -96,3 +117,19 @@ def register_operations(app,db,current):
         s.add(Audit(user_id=u.id,action='backup.request',details={'scope':['database','media','runtime']}))
         s.commit()
         return {'status':'queued'}
+
+    @app.get('/api/operations/backups')
+    def list_backups(u=Depends(current)):
+        if u.role!='admin':raise HTTPException(403)
+        return backup_catalog()
+
+    @app.get('/api/operations/backups/{backup_id}/database')
+    def download_database(backup_id:str,u=Depends(current),s=Depends(db)):
+        if u.role!='admin':raise HTTPException(403)
+        item=next((entry for entry in backup_catalog() if entry['id']==backup_id),None)
+        if item is None or not item['complete']:raise HTTPException(404,'Готовая резервная копия не найдена')
+        root=Path(os.getenv('BACKUP_ROOT','/backups')).resolve()
+        path=root/backup_id if backup_id.endswith('.dump') else root/backup_id/'database.dump'
+        if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(root):raise HTTPException(404)
+        s.add(Audit(user_id=u.id,action='backup.download',details={'backup_id':backup_id,'scope':'database'}));s.commit()
+        return FileResponse(path,media_type='application/octet-stream',filename=backup_id if backup_id.endswith('.dump') else backup_id+'.dump',headers={'Cache-Control':'no-store'})
