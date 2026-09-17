@@ -43,3 +43,11 @@ def test_missing_matching_model_uses_matching_fallback():
 
 def test_unknown_name_keeps_available_voice_selection():
     assert choose_voice(['irina', 'denis'], 'Саша') in ('irina', 'denis')
+
+
+def test_stable_speech_uses_same_voice_across_retries_and_varies_between_texts():
+    voices=['denis','dmitri','irina','ruslan']
+    selected={choose_voice(voices,'Иван',stable_key='Одна и та же реплика') for _ in range(20)}
+    assert len(selected)==1 and selected<= {'denis','dmitri'}
+    varied={choose_voice(voices,'Иван',stable_key=f'Разное происшествие {i}') for i in range(40)}
+    assert varied=={'denis','dmitri'}

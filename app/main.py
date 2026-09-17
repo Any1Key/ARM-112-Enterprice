@@ -154,8 +154,10 @@ def delete_run_data(s,run_id,remove_recording=True):
     s.query(RunContext).filter(RunContext.run_id==run_id).delete(synchronize_session=False)
     s.query(VoipCall).filter(VoipCall.run_id==run_id).delete(synchronize_session=False)
     if remove_recording:
-        try:Path('/media') .joinpath(f'recording-{run_id}.wav').unlink(missing_ok=True)
-        except OSError:pass
+        from app.recordings import media_root
+        for recording in [media_root()/f'recording-{run_id}.wav',*media_root().glob(f'recording-{run_id}-*.wav')]:
+            try:recording.unlink(missing_ok=True)
+            except OSError:pass
     s.query(SessionRun).filter(SessionRun.id==run_id).delete(synchronize_session=False)
 def cleanup_expired():
     from datetime import timedelta
@@ -174,8 +176,10 @@ MAX_AUDIO_BYTES=50*1024*1024
 def list_attachments(run_id:int,u=Depends(current),s:Session=Depends(db)):
     get_run(s,u,run_id)
     result=[{'id':x.id,'filename':x.filename,'content_type':x.content_type,'size':x.size,'created_at':x.created_at,'url':f'/api/attachments/{x.id}'} for x in s.scalars(select(CardAttachment).where(CardAttachment.run_id==run_id).order_by(CardAttachment.id.desc()))]
-    recording=Path('/media')/f'recording-{run_id}.wav'
-    if recording.exists(): result.insert(0,{'id':f'sip-{run_id}','filename':'Запись SIP-звонка.wav','content_type':'audio/wav','size':recording.stat().st_size,'created_at':None,'url':f'/api/telephony/runs/{run_id}/recording'})
+    from app.recordings import recording_files
+    files=recording_files(s,run_id)
+    for call_id,recording in sorted(files.items(),reverse=True):
+        result.insert(0,{'id':f'sip-{call_id}','filename':f'Запись SIP-звонка №{call_id}.wav','content_type':'audio/wav','size':recording.stat().st_size,'created_at':None,'url':f'/api/telephony/runs/{run_id}/recording?call_id={call_id}'})
     return result
 @app.post('/api/runs/{run_id}/attachments')
 async def upload_attachment(run_id:int,file:UploadFile=File(...),u=Depends(current),s:Session=Depends(db)):
@@ -320,14 +324,20 @@ def export_reports(u=Depends(current),s:Session=Depends(db)):
     from fastapi.responses import Response
     buffer=io.StringIO()
     writer=csv.writer(buffer,delimiter=';')
-    writer.writerow(['Сессия','Сценарий','Обучающийся','Начало','Завершение','Первичная оценка','Экспертная оценка','Время обработки, сек','Время реакции, сек','Норматив, сек','Отклонение, сек','Ошибки','Комментарий преподавателя'])
+    writer.writerow(['Сессия','Сценарий','Обучающийся','Начало','Завершение','Первичная оценка','Экспертная оценка','Время обработки, сек','Время реакции, сек','Норматив, сек','Отклонение, сек','Ошибки','Комментарий преподавателя','Режим','Регистрация','Канал','Время после регистрации, сек','Пропуски','Тип студента','Тип эталона','Адрес студента','Адрес эталона','Заявитель','АОН','Обратный номер','Пострадавшие','Службы студента','Не выбранные службы','Описание студента','Комментарий студента'])
     rows=reports(u,s)
     def cell(value):
         value=str(value) if value is not None else ''
         return "'"+value if value.startswith(('=','+','-','@','\t','\r')) else value
     for row in rows:
         report=row['report'] or {};review=row['expert_review'] or {}
-        writer.writerow([cell(value) for value in [row['id'],row['scenario_title'],row['student_name'],row['started_at'],row['finished_at'],row['score'],review.get('score'),report.get('elapsed_seconds'),report.get('reaction_seconds'),report.get('norm_seconds'),report.get('time_deviation_seconds'),'; '.join(report.get('errors',[])),review.get('comment')]])
+        run=s.get(SessionRun,row['id']);context=s.get(RunContext,row['id']);card=run.answers or {}
+        snapshot=context.scenario_snapshot if context else {}
+        expected=snapshot.get('expected',{}) if u.role in ('teacher','admin') else {}
+        from app.workflows import events_for,postprocessing_seconds
+        events=events_for(s,run)
+        writer.writerow([cell(value) for value in [row['id'],row['scenario_title'],row['student_name'],row['started_at'],row['finished_at'],row['score'],review.get('score'),report.get('elapsed_seconds'),report.get('reaction_seconds'),report.get('norm_seconds'),report.get('time_deviation_seconds'),'; '.join(report.get('errors',[])),review.get('comment'),
+            'ДДС' if snapshot.get('mode')=='dispatch' else '112',context.registered_at if context else None,card.get('channel'),postprocessing_seconds(run,context,events),sum(e.kind=='card.skip' for e in events),card.get('incident_type'),expected.get('incident_type'),card.get('address'),expected.get('address'),card.get('caller_name'),card.get('aon'),card.get('caller_phone'),card.get('victims_count'),', '.join(card.get('services',[])),', '.join(sorted(set(expected.get('services',[]))-set(card.get('services',[])))) if expected else '',card.get('description'),card.get('operator_comment')]])
     audit(s,u,'report.export',{'count':len(rows)})
     return Response(('\ufeff'+buffer.getvalue()).encode('utf-8'),media_type='text/csv; charset=utf-8',headers={'Content-Disposition':'attachment; filename="arm112-results.csv"'})
 
@@ -341,3 +351,6 @@ register_operations(app,db,current)
 
 from app.card_extensions import register_extensions
 register_extensions(app,db,current)
+
+from app.report_details import register_report_details
+register_report_details(app,db,current)

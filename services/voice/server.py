@@ -22,7 +22,7 @@ class Speech(BaseModel):
 def health():return {'status':'ok','engine':'piper-russian' if voice_models else 'espeak-ng','language':'ru','voices':sorted(voice_models)}
 @app.post('/speech')
 def speech(data:Speech):
-    voice_name=choose_voice(voice_models,data.caller_name,data.text,data.voice)
+    voice_name=choose_voice(voice_models,data.caller_name,data.text,data.voice,stable_key=data.caller_name+"\0"+data.text)
     # Include the engine and voice revision so cached espeak files are never
     # reused after switching to neural Piper voices.
     key=hashlib.sha256((f'piper-{voice_name}-v1\\0'+data.text).encode()).hexdigest();target=root/(key+'.wav')
@@ -31,7 +31,8 @@ def speech(data:Speech):
         if sound_lock is None:
             sound_lock=threading.Lock();sound_locks[key]=sound_lock
     with sound_lock:
-        if not target.exists():
+        cached=target.exists()
+        if not cached:
             with tempfile.TemporaryDirectory(dir=root) as temp:
                 original=Path(temp)/'original.wav';converted=Path(temp)/'converted.wav'
                 if voice_name in voice_models:
@@ -41,4 +42,4 @@ def speech(data:Speech):
                     subprocess.run(['espeak-ng','-v','ru+f3' if voice_name=='espeak-female' else 'ru','-s','145','-w',str(original),'--stdin'],input=data.text.encode(),check=True,timeout=60)
                 subprocess.run(['sox',str(original),'-r','8000','-c','1','-b','16',str(converted)],check=True,timeout=30)
                 os.replace(converted,target)
-    return {'key':key,'sound':'/media/'+key,'engine':'piper-'+voice_name if voice_name in voice_models else 'espeak-ng','voice':voice_name}
+    return {'key':key,'sound':'/media/'+key,'engine':'piper-'+voice_name if voice_name in voice_models else 'espeak-ng','voice':voice_name,'cached':cached}

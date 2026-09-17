@@ -172,6 +172,19 @@ def elapsed_seconds(run,context,at=None):
     cutoff=aware(context.registered_at) if context and context.registered_at and snapshot.get('mode','call')=='call' else (at or aware(run.finished_at) or now())
     return max(0,int(snapshot.get('timer_elapsed_seconds',0)+max(0,(cutoff-anchor).total_seconds())))
 
+def postprocessing_seconds(run,context,events,at=None):
+    if not context or not context.registered_at:return 0
+    start=aware(context.registered_at);end=aware(run.finished_at) or at or now()
+    paused=None;pause_seconds=0
+    for e in sorted(events,key=lambda e:(aware(e.at),e.id or 0)):
+        stamp=aware(e.at)
+        if stamp>end:break
+        if e.kind=='card.skip':paused=max(start,stamp)
+        elif e.kind=='card.resume' and paused is not None:
+            pause_seconds+=max(0,(stamp-paused).total_seconds());paused=None
+    if paused is not None:pause_seconds+=max(0,(end-paused).total_seconds())
+    return max(0,int((end-start).total_seconds()-pause_seconds))
+
 def run_payload(s,run,context):
     events=events_for(s,run);history=history_for(events)
     if context: context.registered_at=aware(context.registered_at)
@@ -193,7 +206,7 @@ def run_payload(s,run,context):
             'mode':snapshot.get('mode','call'),'service_code':snapshot.get('service_code','112'),
             'norm_seconds':snapshot.get('expected',{}).get('norm_seconds',30),
             'timer_frozen':bool(context and context.registered_at and snapshot.get('mode','call')=='call'),
-            'postprocessing_seconds':max(0,int(((aware(run.finished_at) or now())-context.registered_at).total_seconds())) if context and context.registered_at else 0,
+            'postprocessing_seconds':postprocessing_seconds(run,context,events),
             'last_request_id':snapshot.get('last_draft_request_id'),'registered_at':context.registered_at if context else None,
             'status':'Пропущена' if (run.report or {}).get('skipped') else indicator,'service_history':history,
             'available_statuses':{code:available_statuses(records[-1]['status'],code) for code,records in history.items()},
@@ -279,7 +292,7 @@ def finalize_run(s,u,run,context,card,evaluate,commit=True):
         from app.ml import apply_neural
         apply_neural(report,scenario.expected.get('operator_comment',''),text,'Комментарий диспетчера',30)
     if context and snapshot.get('mode','call')=='call':
-        report['postprocessing_seconds']=max(0,int((now()-aware(context.registered_at)).total_seconds())) if context.registered_at else 0
+        report['postprocessing_seconds']=postprocessing_seconds(run,context,events_for(s,run))
     from app.models import OperatorPresence
     operator=s.get(OperatorPresence,run.student_id)
     if operator:operator.available_after=now()+timedelta(seconds=10)

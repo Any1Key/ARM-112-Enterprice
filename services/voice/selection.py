@@ -1,6 +1,7 @@
 """Select a voice using the caller's name, independently of synthesis."""
 import re
 import secrets
+import hashlib
 
 VOICE_GENDERS = {'dmitri': 'male', 'ruslan': 'male', 'denis': 'male', 'irina': 'female'}
 DISABLED_VOICES = frozenset({'ruslan'})
@@ -28,7 +29,7 @@ def caller_gender(caller_name='', text=''):
     return next(iter(genders)) if len(genders) == 1 else None
 
 
-def choose_voice(available, caller_name='', text='', requested=None):
+def choose_voice(available, caller_name='', text='', requested=None, stable_key=None):
     gender = caller_gender(caller_name, text)
     candidates = sorted(name for name in available
                         if name not in DISABLED_VOICES
@@ -36,6 +37,9 @@ def choose_voice(available, caller_name='', text='', requested=None):
     if requested in candidates:
         return requested
     if candidates:
+        if stable_key is not None:
+            index=int.from_bytes(hashlib.sha256(stable_key.encode()).digest()[:8],'big')
+            return candidates[index % len(candidates)]
         return secrets.choice(candidates)
     # Если подходящей нейромодели нет, резервный движок сохраняет пол голоса.
     return 'espeak-female' if gender == 'female' else 'espeak-male'

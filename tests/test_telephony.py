@@ -30,3 +30,53 @@ def test_sip_access_and_account_provision_are_per_student(client,monkeypatch,tmp
     again=client.post('/api/telephony/account',headers=student)
     assert again.status_code==200 and len(reloads)==1
     assert client.post('/api/telephony/account?device=unknown',headers=student).status_code==422
+
+
+def test_ami_preserves_contact_output_and_detects_registration(monkeypatch):
+    import io
+    reply=telephony.read_frame(io.BytesIO(b'Response: Success\r\nOutput: Contact:  arm3/sip:test Avail\r\nOutput: footer\r\n\r\n'))
+    assert len(reply['Output'])==2
+    monkeypatch.setattr(telephony,'ami_action',lambda *a,**kw:reply)
+    assert telephony.phone_registered('arm3')
+    assert not telephony.phone_registered('arm4')
+    monkeypatch.setattr(telephony,'ami_action',lambda *a,**kw:{'Output':['Contact: arm3/sip:test Unavail']})
+    assert not telephony.phone_registered('arm3')
+
+
+def test_unregistered_call_is_rejected_and_prepared_calls_can_cancel_and_retry(client,monkeypatch,tmp_path):
+    from test_workflows import create_scenario
+    from app.models import VoipCall
+    from sqlalchemy import select
+    from app import main
+    student,teacher=auth(client,'student'),auth(client,'teacher')
+    monkeypatch.setenv('SIP_PROVISION_ROOT',str(tmp_path/'sip'))
+    monkeypatch.setattr(telephony,'ami_action',lambda *a,**kw:{'Response':'Success'})
+    assert client.post('/api/telephony/account',headers=student).status_code==200
+    scenario=create_scenario(client,teacher);run=client.post(f'/api/runs/{scenario}/start',headers=student).json();identifier=run['run_id']
+    response=client.post(f'/api/telephony/runs/{identifier}/call',headers=student)
+    assert response.status_code==409 and 'не зарегистрирован' in response.json()['detail']
+    launched=[];monkeypatch.setattr(telephony,'phone_registered',lambda name:True)
+    monkeypatch.setattr(telephony,'launch_worker',lambda target,args:launched.append((target,args)))
+    first=client.post(f'/api/telephony/runs/{identifier}/call',headers=student).json()
+    repeated=client.post(f'/api/telephony/runs/{identifier}/call',headers=student).json()
+    assert first['call_id']==repeated['call_id'] and len(launched)==1
+    assert client.post(f'/api/telephony/runs/{identifier}/call/cancel',headers=student).status_code==200
+    monkeypatch.setattr(telephony,'prepare_speech',lambda *a:(_ for _ in ()).throw(AssertionError('Cancelled calls must not synthesize audio')))
+    target,args=launched[0];target(*args)
+    with main.SessionLocal() as s:assert s.get(VoipCall,first['call_id']).state=='cancelled'
+    retry=client.post(f'/api/telephony/runs/{identifier}/call',headers=student).json()
+    assert retry['call_id']!=first['call_id'] and len(launched)==2
+    status=client.get(f'/api/telephony/runs/{identifier}',headers=student).json()
+    assert status[-1]['created_at'] and status[-1]['state']=='queued'
+    assert client.get(f'/api/runs/{identifier}',headers=student).json()['card']['channel']=='SIP / IP-телефон'
+
+
+def test_audio_prewarm_requires_assigned_published_call_scenario(client,monkeypatch):
+    from test_workflows import create_scenario
+    student,teacher=auth(client,'student'),auth(client,'teacher');scenario=create_scenario(client,teacher)
+    monkeypatch.setattr(telephony,'prepare_speech',lambda *args:{'key':'a'*64,'voice':'irina','cached':True})
+    response=client.post(f'/api/telephony/scenarios/{scenario}/prepare',headers=student)
+    assert response.status_code==200 and response.json()['cached']
+    assert client.post(f'/api/telephony/scenarios/{scenario}/prepare',headers=teacher).status_code==403
+    unpublished=create_scenario(client,teacher,published=False)
+    assert client.post(f'/api/telephony/scenarios/{unpublished}/prepare',headers=student).status_code==403
