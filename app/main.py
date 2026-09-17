@@ -109,6 +109,8 @@ def startup():
     Path('data/runtime').mkdir(parents=True,exist_ok=True); Base.metadata.create_all(engine)
     with SessionLocal() as s:
         import_classifier(s); import_materials(s); seed(s)
+        from app.bundled_scenarios import install_practice_catalog
+        install_practice_catalog(s)
         from app.telephony import recover_interrupted_calls
         recover_interrupted_calls(s)
     cleanup_expired()
