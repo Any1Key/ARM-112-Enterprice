@@ -203,7 +203,7 @@ def run_payload(s,run,context):
             'timer_started_at':now()-timedelta(seconds=elapsed_seconds(run,context)), 'elapsed_seconds':elapsed_seconds(run,context),
             'card':run.answers,'revision':context.revision if context else 0,'checked':bool(context and context.checked),
             'operator_id':snapshot.get('origin_operator_id',str(run.student_id)),'workstation':snapshot.get('origin_workstation',str(run.student_id)),
-            'mode':snapshot.get('mode','call'),'service_code':snapshot.get('service_code','112'),
+            'mode':snapshot.get('mode','call'),'service_code':snapshot.get('service_code','112'),'lesson_id':context.lesson_id if context else None,
             'norm_seconds':snapshot.get('expected',{}).get('norm_seconds',30),
             'timer_frozen':bool(context and context.registered_at and snapshot.get('mode','call')=='call'),
             'postprocessing_seconds':postprocessing_seconds(run,context,events),
@@ -222,6 +222,34 @@ def register_card(s,u,run,context):
     for code in run.answers.get('services',[]):
         s.add(CardEvent(run_id=run.id,user_id=u.id,kind='service.status',data={'service_code':code,'status':'Добавлена','comment':'','unit_number':''}))
     log(s,u,'card.register',{'run_id':run.id})
+
+def lesson_progress(s,lesson,student_id):
+    attempts=list(s.execute(select(SessionRun,RunContext).join(RunContext).where(
+        RunContext.lesson_id==lesson.id,SessionRun.student_id==student_id
+    ).order_by(SessionRun.id)))
+    latest={run.scenario_id:(run,context) for run,context in attempts}
+    scenarios={item.id:item for item in s.scalars(select(Scenario).where(Scenario.id.in_(lesson.scenario_ids)))}
+    tasks=[]
+    for identifier in dict.fromkeys(lesson.scenario_ids):
+        previous=latest.get(identifier);run,context=previous if previous else (None,None)
+        status='pending' if not run else ('in_progress' if not run.finished_at else ('skipped' if (run.report or {}).get('skipped') else 'completed'))
+        title=scenarios[identifier].title if identifier in scenarios else 'Задание №'+str(identifier)
+        tasks.append({'scenario_id':identifier,'title':context.scenario_snapshot.get('title',title) if context else title,
+                      'status':status,'run_id':run.id if run else None,'score':run.score if run and status=='completed' else None,
+                      'started_at':aware(run.started_at) if run else None,'finished_at':aware(run.finished_at) if run else None,
+                      'elapsed_seconds':(run.report or {}).get('elapsed_seconds') if run and run.finished_at else None})
+    counts={status:sum(task['status']==status for task in tasks) for status in ('pending','in_progress','skipped','completed')}
+    return {'tasks':tasks,'counts':{**counts,'total':len(tasks)},'all_completed':bool(tasks) and counts['completed']==len(tasks)}
+
+def lesson_active_run(s,u,lesson):
+    s.scalar(select(User).where(User.id==u.id).with_for_update())
+    active=s.scalar(select(SessionRun).where(SessionRun.student_id==u.id,SessionRun.finished_at.is_(None)).order_by(SessionRun.id.desc()).with_for_update())
+    if active:
+        context=s.get(RunContext,active.id)
+        if not context or context.lesson_id!=lesson.id:
+            raise HTTPException(409,'У вас открыта карточка другого занятия. Завершите её или нажмите «Пропустить карточку».')
+        return active,context
+    return None
 
 def begin_run(s,u,scenario,lesson=None):
     check_scenario_access(s,u,scenario)
@@ -473,8 +501,24 @@ def register_routes(app,db,current,evaluate,pwd):
             if u.role=='student' and u.id not in lesson.student_ids: continue
             rows.append({'id':lesson.id,'title':lesson.title,'status':lesson.status,'mode':lesson.mode,
                          'scenario_ids':lesson.scenario_ids,'student_ids':lesson.student_ids if u.role!='student' else [u.id],
-                         'service_code':lesson.service_code})
+                         'service_code':lesson.service_code,**(lesson_progress(s,lesson,u.id) if u.role=='student' else {})})
         return rows
+
+    @app.post('/api/lessons/{lesson_id}/tasks/{scenario_id}/start')
+    def start_lesson_task(lesson_id:int,scenario_id:int,u=Depends(current),s=Depends(db)):
+        lesson=s.scalar(select(Lesson).where(Lesson.id==lesson_id).with_for_update())
+        if not lesson:raise HTTPException(404)
+        if u.role!='student' or u.id not in lesson.student_ids:raise HTTPException(403)
+        if lesson.status!='active':raise HTTPException(409,'Занятие не запущено')
+        if scenario_id not in lesson.scenario_ids:raise HTTPException(403,'Задание не назначено на этом занятии')
+        active=lesson_active_run(s,u,lesson)
+        if active:
+            if active[0].scenario_id!=scenario_id:raise HTTPException(409,'Завершите текущую карточку или нажмите «Пропустить карточку».')
+            return run_payload(s,*active)
+        task=next(item for item in lesson_progress(s,lesson,u.id)['tasks'] if item['scenario_id']==scenario_id)
+        if task['status']=='completed':raise HTTPException(409,'Задание уже выполнено. Откройте его результат.')
+        run,context=begin_run(s,u,s.get(Scenario,scenario_id),lesson)
+        return run_payload(s,run,context)
 
     @app.post('/api/lessons/{lesson_id}/{action}')
     def control_lesson(lesson_id:int,action:str,u=Depends(current),s=Depends(db)):
@@ -483,11 +527,13 @@ def register_routes(app,db,current,evaluate,pwd):
         if action=='next':
             if u.role!='student' or u.id not in lesson.student_ids: raise HTTPException(403)
             if lesson.status!='active': raise HTTPException(409,'Занятие не запущено')
-            active=s.scalar(select(SessionRun).join(RunContext).where(RunContext.lesson_id==lesson.id,SessionRun.student_id==u.id,SessionRun.finished_at.is_(None)))
-            if active: return run_payload(s,active,s.get(RunContext,active.id))
-            completed=list(s.scalars(select(SessionRun.scenario_id).join(RunContext).where(RunContext.lesson_id==lesson.id,SessionRun.student_id==u.id)))
-            remaining=[identifier for identifier in lesson.scenario_ids if identifier not in completed]
-            if not remaining: return {'done':True}
+            active=lesson_active_run(s,u,lesson)
+            if active:return run_payload(s,*active)
+            progress=lesson_progress(s,lesson,u.id)
+            pending=[task['scenario_id'] for task in progress['tasks'] if task['status']=='pending']
+            skipped=[task['scenario_id'] for task in progress['tasks'] if task['status']=='skipped']
+            remaining=pending or skipped
+            if not remaining:return {'done':True,**progress}
             import secrets
             scenario=s.get(Scenario,secrets.choice(remaining))
             run,context=begin_run(s,u,scenario,lesson);return run_payload(s,run,context)
