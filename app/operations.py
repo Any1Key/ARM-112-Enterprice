@@ -1,5 +1,6 @@
 """Admin-only live component health and backup freshness."""
-import os,time,resource,json
+import os,time,json
+from threading import Lock,Thread
 from pathlib import Path
 from datetime import datetime,timezone
 from concurrent.futures import ThreadPoolExecutor
@@ -9,6 +10,38 @@ from sqlalchemy import select,func
 from app.models import User,SessionRun,Audit
 from app.telephony import ami_action
 started=time.monotonic()
+
+class ProcessCpuMeter:
+    """One-second process CPU samples; 100% means one fully occupied core."""
+    def __init__(self):
+        self.lock=Lock()
+        self.previous=None
+        self.percent=None
+
+    def sample(self,wall,cpu):
+        with self.lock:
+            if self.previous is not None:
+                previous_wall,previous_cpu=self.previous
+                elapsed=wall-previous_wall
+                if elapsed>0:self.percent=round(max(0,(cpu-previous_cpu)/elapsed*100),1)
+            self.previous=(wall,cpu)
+
+    def run(self):
+        while True:
+            self.sample(time.monotonic(),time.process_time())
+            time.sleep(1)
+
+cpu_meter=ProcessCpuMeter()
+Thread(target=cpu_meter.run,daemon=True,name='process-cpu-meter').start()
+
+def process_metrics():
+    try:
+        resident_pages=int(Path('/proc/self/statm').read_text().split()[1])
+        ram_mb=round(resident_pages*os.sysconf('SC_PAGE_SIZE')/1048576,1)
+    except (OSError,ValueError,IndexError):ram_mb=None
+    with cpu_meter.lock:cpu_percent=cpu_meter.percent
+    return {'process_ram_mb':ram_mb,'process_cpu_percent':cpu_percent}
+
 def backup_snapshot(root=None):
     root=Path(root or os.getenv('BACKUP_ROOT','/backups'))
     def read_json(name):
@@ -49,8 +82,7 @@ def register_operations(app,db,current):
             except Exception as exc:return name,{'status':'unavailable','reason':type(exc).__name__}
         with ThreadPoolExecutor(max_workers=6) as executor:components=dict(executor.map(probe,['redis','asterisk','ml','voice','grammar','ollama']))
         components['postgresql']={'status':'ok'};components['backup']=backup_snapshot()
-        usage=resource.getrusage(resource.RUSAGE_SELF)
-        return {'at':datetime.now(timezone.utc),'uptime_seconds':round(time.monotonic()-started),'process_cpu_seconds':round(usage.ru_utime+usage.ru_stime,2),'process_max_rss_kb':usage.ru_maxrss,'users':s.scalar(select(func.count(User.id))),'active_runs':s.scalar(select(func.count(SessionRun.id)).where(SessionRun.finished_at.is_(None))),'audit_events':s.scalar(select(func.count(Audit.id))),'components':components}
+        return {'at':datetime.now(timezone.utc),'uptime_seconds':round(time.monotonic()-started),**process_metrics(),'users':s.scalar(select(func.count(User.id))),'active_runs':s.scalar(select(func.count(SessionRun.id)).where(SessionRun.finished_at.is_(None))),'audit_events':s.scalar(select(func.count(Audit.id))),'components':components}
 
     @app.post('/api/operations/backup',status_code=202)
     def request_backup(u=Depends(current),s=Depends(db)):

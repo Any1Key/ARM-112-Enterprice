@@ -39,3 +39,20 @@ def test_backup_queue_access_and_availability(client,tmp_path,monkeypatch):
     assert client.post('/api/operations/backup',headers=admin).status_code==409
     events=client.get('/api/audit',headers=admin).json()
     assert len([event for event in events if event['action']=='backup.request'])==1
+
+
+def test_cpu_percentage_uses_elapsed_time_and_supports_multiple_cores():
+    from app.operations import ProcessCpuMeter,process_metrics
+    meter=ProcessCpuMeter()
+    meter.sample(10,2)
+    assert meter.percent is None
+    meter.sample(12,3)
+    assert meter.percent==50
+    meter.sample(13,5)
+    assert meter.percent==200
+    meter.sample(13,5)
+    assert meter.percent==200
+    metrics=process_metrics()
+    assert metrics['process_ram_mb']>0
+    assert 'process_max_rss_kb' not in metrics
+    assert 'process_cpu_seconds' not in metrics
