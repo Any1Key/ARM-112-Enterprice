@@ -1,5 +1,5 @@
 """Admin-only live component health and backup freshness."""
-import os,time,json,re
+import os,time,json,re,secrets
 from threading import Lock,Thread
 from pathlib import Path
 from datetime import datetime,timezone
@@ -7,8 +7,9 @@ from concurrent.futures import ThreadPoolExecutor
 import httpx,redis
 from fastapi import Depends,HTTPException
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from sqlalchemy import select,func
-from app.models import User,SessionRun,Audit
+from app.models import User,SessionRun,Audit,AccountState
 from app.telephony import ami_action
 started=time.monotonic()
 
@@ -135,3 +136,42 @@ def register_operations(app,db,current):
         if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(root):raise HTTPException(404)
         s.add(Audit(user_id=u.id,action='backup.download',details={'backup_id':backup_id,'scope':'database'}));s.commit()
         return FileResponse(path,media_type='application/octet-stream',filename=backup_id if backup_id.endswith('.dump') else backup_id+'.dump',headers={'Cache-Control':'no-store'})
+
+    @app.post('/api/operations/backups/{backup_id}/export',status_code=201)
+    def export_full_backup(backup_id:str,u=Depends(current),s=Depends(db)):
+        if u.role!='admin':raise HTTPException(403)
+        from app.backup_archives import pack_bundle,ArchiveError
+        from app.restoration import atomic_json,auth_epoch
+        item=next((entry for entry in backup_catalog() if entry['id']==backup_id),None)
+        if item is None or not item['complete'] or 'media' not in item['scope']:raise HTTPException(404,'Полная резервная копия не найдена')
+        root=Path(os.getenv('BACKUP_ROOT','/backups'))
+        exports=root/'exports';exports.mkdir(parents=True,exist_ok=True,mode=0o700)
+        # Exports that were never downloaded expire after ten minutes.
+        for old in exports.iterdir():
+            if old.is_file() and time.time()-old.stat().st_mtime>600:old.unlink(missing_ok=True)
+        token=secrets.token_hex(32);path=exports/(token+'.tar.gz')
+        try:
+            pack_bundle(root/backup_id,path);path.chmod(0o600)
+            atomic_json(exports/(token+'.json'),{'user_id':u.id,'created_at':time.time(),'epoch':auth_epoch(),'filename':backup_id+'.tar.gz'})
+        except (ArchiveError,OSError) as exc:
+            path.unlink(missing_ok=True)
+            raise HTTPException(422,str(exc))
+        return {'url':'/api/operations/exports/'+token,'filename':backup_id+'.tar.gz','size_bytes':path.stat().st_size}
+
+    @app.get('/api/operations/exports/{token}')
+    def download_full_backup(token:str,s=Depends(db)):
+        from app.restoration import auth_epoch
+        if not re.fullmatch('[a-f0-9]{64}',token):raise HTTPException(404)
+        exports=Path(os.getenv('BACKUP_ROOT','/backups'))/'exports'
+        ticket=exports/(token+'.json');consumed=exports/(token+'.used')
+        try:ticket.rename(consumed)
+        except OSError:raise HTTPException(404,'Ссылка скачивания недействительна или уже использована')
+        try:
+            info=json.loads(consumed.read_text())
+            user=s.get(User,info['user_id']);account=s.get(AccountState,info['user_id'])
+            if time.time()-info['created_at']>600 or info['epoch']!=auth_epoch() or not user or user.role!='admin' or (account and account.blocked):raise HTTPException(403)
+            path=exports/(token+'.tar.gz')
+            if not path.is_file() or path.is_symlink():raise HTTPException(404)
+            s.add(Audit(user_id=user.id,action='backup.download',details={'backup_id':info['filename'],'scope':'full'}));s.commit()
+            return FileResponse(path,media_type='application/gzip',filename=info['filename'],headers={'Cache-Control':'no-store'},background=BackgroundTask(path.unlink,missing_ok=True))
+        finally:consumed.unlink(missing_ok=True)

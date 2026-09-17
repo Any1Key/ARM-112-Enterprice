@@ -27,8 +27,10 @@ services:
       - ./deploy/backup/health.sh:/health.sh:ro
       - ./deploy/backup/verify.sh:/verify.sh:ro
       - ./deploy/backup/restore.py:/restore.py:ro
-      - call_media:/backup-media:ro
-      - app_data:/backup-runtime:ro
+      - ./app/backup_archives.py:/backup_archives.py:ro
+      - ./app/restore_files.py:/restore_files.py:ro
+      - call_media:/backup-media
+      - app_data:/backup-runtime
       - sip_provision:/backup-provision
       - ${BACKUP_DIR:-./backups}:/backups
     command: ["sh", "/start.sh"]

@@ -62,8 +62,9 @@
 - `GET /api/operations/backups` — готовые и неполные копии с датой, составом и размерами.
 - `GET /api/operations/backups/{id}/database` — скачивание `.dump`, только БД, с аудитом.
 - `POST /api/operations/backup` — фоновая полная копия БД/аудио/файлов.
-- `POST /api/operations/restore/uploads` — тело файла `application/octet-stream`, авторизация Bearer; custom-format, до 100 МБ. Ответ `upload_id`.
-- `POST /api/operations/restore/jobs` — ровно одно из `backup_id`/`upload_id`, текущий пароль администратора `password`, `confirmation="ВОССТАНОВИТЬ"`, `trusted_source=true`. Ответ 202: `job_id`, `status_token`. Активные звонки/генерация или резервирование дают 409.
-- `GET /api/operations/restore/jobs/{job_id}` — наблюдение по секретному заголовку `X-Restore-Token`, работает без БД и после аннулирования прежней сессии. Состояния: queued, draining, validating, backing_up, switching, finalizing, succeeded, failed.
+- `POST /api/operations/backups/{id}/export` — подготовка проверенного полного `.tar.gz`; ответ `url`, `filename`, `size_bytes`. Скачивание GET по одноразовому URL действует 10 минут, привязано к администратору и текущей эпохе авторизации.
+- `POST /api/operations/restore/uploads` — тело файла `application/octet-stream`, авторизация Bearer; custom-format, до 100 МБ. Ответ `upload_id`, `kind`. Для полного `.tar.gz` используйте `?kind=full`, до 2 ГБ.
+- `POST /api/operations/restore/jobs` — `scope="full"` или `"database"` (по умолчанию), ровно одно из `backup_id`/`upload_id`, текущий пароль администратора `password`, `confirmation="ВОССТАНОВИТЬ"`, `trusted_source=true`. Ответ 202: `job_id`, `status_token`. Активные звонки/генерация или резервирование дают 409.
+- `GET /api/operations/restore/jobs/{job_id}` — наблюдение по секретному заголовку `X-Restore-Token`, работает без БД и после аннулирования прежней сессии. Состояния: queued, draining, checking_files, validating, backing_up, restoring_files, switching, finalizing, recovering, succeeded, failed.
 
-На время восстановления остальные API возвращают 503; звонки также блокируются в диалплане. `/health` и статические страницы доступны. После успеха старые токены возвращают 401, требуется новый вход. Файлы другого сервера не входят в дамп БД: восстановление архивов аудио/вложений выполняется отдельно. Подробности — `OPERATIONS.md`.
+На время восстановления остальные API возвращают 503; звонки также блокируются в диалплане. `/health` и статические страницы доступны. После успеха старые токены возвращают 401, требуется новый вход. Полный архив восстанавливает БД, аудио и вложения вместе; проверяются SHA-256 и безопасная распаковка (до 8 ГБ). Дамп `.dump` восстанавливает только БД. Подробности — `OPERATIONS.md`.

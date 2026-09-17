@@ -7,6 +7,7 @@ import re
 import secrets
 import time
 from pathlib import Path
+from typing import Literal
 from threading import Lock,Thread,Event
 
 from fastapi import Depends,HTTPException,Request
@@ -45,6 +46,7 @@ def quarantine_imported_recordings(job_id):
     return str(destination) if destination.exists() else None
 
 class RestoreRequest(BaseModel):
+    scope:Literal['database','full']='database'
     backup_id:str|None=Field(default=None,max_length=150)
     upload_id:str|None=Field(default=None,max_length=32)
     password:str=Field(min_length=1,max_length=200)
@@ -76,10 +78,13 @@ def register_restoration(app,db,current,factory,engine,verify_password,catalog):
     @app.post('/api/operations/restore/uploads',status_code=201)
     async def upload_database(request:Request,u=Depends(current)):
         if u.role!='admin':raise HTTPException(403)
-        limit=MAX_UPLOAD
+        full=request.query_params.get('kind')=='full'
+        from app.backup_archives import MAX_FULL_UPLOAD
+        limit=MAX_FULL_UPLOAD if full else MAX_UPLOAD
+        limit_label='2 ГБ' if full else '100 МБ'
         try:length=int(request.headers.get('content-length','0'))
         except ValueError:raise HTTPException(400)
-        if length>limit:raise HTTPException(413,'Размер дампа превышает 100 МБ')
+        if length>limit:raise HTTPException(413,'Размер файла превышает '+limit_label)
         uploads=root()/'uploads'
         if uploads.is_dir():
             for old in uploads.iterdir():
@@ -87,23 +92,24 @@ def register_restoration(app,db,current,factory,engine,verify_password,catalog):
                 try:
                     metadata=json.loads((old/'metadata.json').read_text())
                     if time.time()-metadata.get('uploaded_at',time.time())<=86400:continue
-                    for name in ('database.dump','metadata.json'):(old/name).unlink(missing_ok=True)
+                    for name in ('database.dump','full.tar.gz','metadata.json'):(old/name).unlink(missing_ok=True)
                     old.rmdir()
                 except (OSError,ValueError,TypeError):continue
         upload_id=secrets.token_hex(16)
         directory=root()/'uploads'/upload_id;directory.mkdir(parents=True,mode=0o700)
-        path=directory/'database.dump';size=0
+        path=directory/('full.tar.gz' if full else 'database.dump');size=0
         try:
             with path.open('xb') as stream:
                 path.chmod(0o600)
                 async for chunk in request.stream():
                     size+=len(chunk)
-                    if size>limit:raise HTTPException(413,'Размер дампа превышает 100 МБ')
+                    if size>limit:raise HTTPException(413,'Размер файла превышает '+limit_label)
                     stream.write(chunk)
             with path.open('rb') as stream:magic=stream.read(5)
-            if magic!=b'PGDMP':raise HTTPException(422,'Нужен PostgreSQL custom-format дамп (.dump), скачанный из этой системы. SQL и ZIP не подходят.')
-            atomic_json(directory/'metadata.json',{'uploaded_at':time.time(),'size_bytes':size,'uploaded_by':u.id})
-            return {'upload_id':upload_id,'size_bytes':size}
+            if full and not magic.startswith(b'\x1f\x8b'):raise HTTPException(422,'Нужен архив полной копии .tar.gz, скачанный из этой системы')
+            if not full and magic!=b'PGDMP':raise HTTPException(422,'Нужен PostgreSQL custom-format дамп (.dump), скачанный из этой системы. SQL и ZIP не подходят.')
+            atomic_json(directory/'metadata.json',{'uploaded_at':time.time(),'size_bytes':size,'uploaded_by':u.id,'kind':'full' if full else 'database'})
+            return {'upload_id':upload_id,'size_bytes':size,'kind':'full' if full else 'database'}
         except BaseException:
             path.unlink(missing_ok=True)
             if directory.exists():
@@ -125,17 +131,21 @@ def register_restoration(app,db,current,factory,engine,verify_password,catalog):
             raise HTTPException(409,'Завершите активные звонки перед восстановлением базы')
         if s.scalar(select(AiJob.id).where(AiJob.status.in_(['queued','running'])).limit(1)):
             raise HTTPException(409,'Дождитесь завершения генерации сценариев')
+        scope=payload.scope
         if payload.backup_id:
             selected=next((item for item in catalog() if item['id']==payload.backup_id and item['complete']),None)
             if selected is None:raise HTTPException(404,'Готовая резервная копия не найдена')
-            source=payload.backup_id if payload.backup_id.endswith('.dump') else payload.backup_id+'/database.dump'
+            if scope=='full' and 'media' not in selected['scope']:raise HTTPException(422,'В этой копии есть только БД')
+            source=payload.backup_id+'/manifest.json' if scope=='full' else payload.backup_id if payload.backup_id.endswith('.dump') else payload.backup_id+'/database.dump'
         else:
             if not JOB_ID.fullmatch(payload.upload_id):raise HTTPException(404)
             directory=root()/'uploads'/payload.upload_id
             try:metadata=json.loads((directory/'metadata.json').read_text())
             except (OSError,ValueError):raise HTTPException(404,'Загруженный дамп не найден')
             if metadata.get('uploaded_by')!=u.id or time.time()-metadata.get('uploaded_at',0)>86400:raise HTTPException(404,'Загрузите дамп заново')
-            source='uploads/'+payload.upload_id+'/database.dump'
+            if metadata.get('kind')=='full':scope='full'
+            elif scope=='full':raise HTTPException(422,'Загрузите полную копию вместо отдельного дампа БД')
+            source='uploads/'+payload.upload_id+('/full.tar.gz' if scope=='full' else '/database.dump')
         path=root()/source
         if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(root().resolve()):raise HTTPException(404)
         if (root()/'.restore-request').exists():raise HTTPException(409,'Предыдущее восстановление ещё завершается. Подождите несколько секунд.')
@@ -148,9 +158,9 @@ def register_restoration(app,db,current,factory,engine,verify_password,catalog):
             digest=hashlib.sha256()
             with path.open('rb') as stream:
                 for chunk in iter(lambda:stream.read(1024*1024),b''):digest.update(chunk)
-            atomic_json(directory/'request.json',{'sha256':digest.hexdigest(),'job_id':job_id,'source':source,'requested_by':u.id,'requested_by_name':u.username,'status_token_hash':hashlib.sha256(status_token.encode()).hexdigest()})
+            atomic_json(directory/'request.json',{'scope':scope,'sha256':digest.hexdigest(),'job_id':job_id,'source':source,'requested_by':u.id,'requested_by_name':u.username,'status_token_hash':hashlib.sha256(status_token.encode()).hexdigest()})
             atomic_json(directory/'status.json',{'job_id':job_id,'status':'queued','message':'Ожидает запуска','updated_at':time.time()})
-            s.add(Audit(user_id=u.id,action='database.restore.request',details={'job_id':job_id,'source':source}));s.commit()
+            s.add(Audit(user_id=u.id,action='database.restore.request',details={'job_id':job_id,'source':source,'scope':scope}));s.commit()
             # Closing the gate and recording active requests use the same mutex.
             with guard:
                 (root()/'.restore-maintenance').write_text(job_id);write_inflight()
@@ -190,7 +200,7 @@ def register_restoration(app,db,current,factory,engine,verify_password,catalog):
                     continue
                 if status.get('status')!='finalizing':continue
                 spec=json.loads((directory/'request.json').read_text())
-                if spec['source'].startswith('uploads/'):
+                if spec.get('scope','database')!='full' and spec['source'].startswith('uploads/'):
                     quarantine_imported_recordings(job_id)
                 engine.dispose()
                 with factory() as session:
@@ -201,7 +211,7 @@ def register_restoration(app,db,current,factory,engine,verify_password,catalog):
                     already=session.scalar(select(Audit.id).where(Audit.action=='database.restore.completed',Audit.details['job_id'].as_string()==job_id))
                     if not already:
                         for account in session.scalars(select(SipAccount)):account.password=secrets.token_hex(24)
-                    if not already:session.add(Audit(action='database.restore.completed',details={'job_id':job_id,'requested_by_name':spec['requested_by_name'],'source':spec['source'],'safety_backup':status.get('safety_backup'),'scope':'database'}))
+                    if not already:session.add(Audit(action='database.restore.completed',details={'job_id':job_id,'requested_by_name':spec['requested_by_name'],'source':spec['source'],'safety_backup':status.get('safety_backup'),'scope':spec.get('scope','database')}))
                     session.commit()
                     warning=None
                     try:
@@ -210,7 +220,7 @@ def register_restoration(app,db,current,factory,engine,verify_password,catalog):
                     except (OSError,ConnectionError):warning='Переподключите SIP-телефоны; если Asterisk недоступен, перезапустите его.'
                 (root()/'.auth-epoch').write_text(secrets.token_hex(16))
                 (root()/'.backup-pending').mkdir(mode=0o700,exist_ok=True)
-                atomic_json(directory/'status.json',{**status,'post_backup_queued':True,'status':'succeeded','message':'База восстановлена. Войдите заново с учётной записью из восстановленной базы.','warning':warning,'updated_at':time.time()})
+                atomic_json(directory/'status.json',{**status,'post_backup_queued':True,'status':'succeeded','message':('Полная копия восстановлена: база, аудио и вложения. ' if spec.get('scope')=='full' else 'База восстановлена. ')+'Войдите заново с учётной записью из восстановленной базы.','warning':warning,'updated_at':time.time()})
                 (root()/'.restore-maintenance').unlink(missing_ok=True)
                 sip_gate().unlink(missing_ok=True)
                 (root()/'.restore-lock').rmdir()

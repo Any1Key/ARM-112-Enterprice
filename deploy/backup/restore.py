@@ -5,11 +5,14 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 from threading import Event,Thread
+from backup_archives import ArchiveError,unpack_bundle,verify_bundle,safe_extract,MAX_EXPANDED
+from restore_files import FilesRestore
 
 ROOT=Path(os.getenv('BACKUP_ROOT','/backups'))
 HOST=os.getenv('PGHOST','db')
@@ -72,6 +75,8 @@ def restore(spec):
         return
     if exists(old):raise RestoreError('Обнаружено незавершённое переключение базы; требуется проверка администратора')
     promoted=False
+    files=FilesRestore(spec['job_id'],directory,{'media':'/backup-media','runtime':'/backup-runtime'}) if spec.get('scope')=='full' else None
+    if files:files.rollback()
     try:
         state('draining','Ожидание завершения текущих запросов')
         deadline=time.monotonic()+120
@@ -86,11 +91,25 @@ def restore(spec):
         if sql("SELECT count(*) FROM ai_jobs WHERE status IN ('queued','running')",TARGET).strip()!='0':
             raise RestoreError('Есть незавершённая генерация. Дождитесь её окончания.')
         source=ROOT/spec['source']
-        validate_archive(source)
         digest=hashlib.sha256()
         with source.open('rb') as stream:
             for chunk in iter(lambda:stream.read(1024*1024),b''):digest.update(chunk)
-        if digest.hexdigest()!=spec['sha256']:raise RestoreError('Дамп изменился после выбора. Загрузите или выберите его заново.')
+        if digest.hexdigest()!=spec['sha256']:raise RestoreError('Файл изменился после выбора. Загрузите или выберите его заново.')
+        if files:
+            state('checking_files','Проверяются архив, контрольные суммы, аудио и вложения')
+            bundle=source.parent if source.name=='manifest.json' else directory/'bundle'
+            if source.name!='manifest.json':
+                if bundle.exists():shutil.rmtree(bundle)
+                unpack_bundle(source,bundle)
+            else:verify_bundle(bundle)
+            extracted=directory/'extracted'
+            if extracted.exists():shutil.rmtree(extracted)
+            if shutil.disk_usage(directory).free<sum((bundle/name).stat().st_size for name in ('media.tar.gz','runtime.tar.gz'))+16*1024**2:
+                raise RestoreError('Недостаточно свободного места для проверки файлов')
+            used=safe_extract(bundle/'media.tar.gz',extracted/'media',budget=MAX_EXPANDED)
+            safe_extract(bundle/'runtime.tar.gz',extracted/'runtime',budget=MAX_EXPANDED-used)
+            source=bundle/'database.dump'
+        validate_archive(source)
         state('validating','Дамп восстанавливается в отдельную проверочную базу')
         if exists(stage):sql('DROP DATABASE '+identifier(stage)+' WITH (FORCE)')
         sql('DROP ROLE IF EXISTS '+identifier(role))
@@ -109,6 +128,9 @@ def restore(spec):
         state('backing_up','Создаётся полная копия текущих данных перед заменой базы')
         command(['sh','/backup.sh'],env={**os.environ,'BACKUP_LOCK_HELD':'1'})
         safety=(ROOT/'latest.bundle').read_text().strip()
+        if files:
+            state('restoring_files','Восстанавливаются аудио и вложения',safety_backup=safety)
+            files.install(extracted)
         state('switching','Подключения закрываются, проверенная база заменяет рабочую',safety_backup=safety,previous_database=old)
         sql('ALTER DATABASE '+identifier(TARGET)+' WITH ALLOW_CONNECTIONS false')
         sql('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='+literal(TARGET)+' AND pid<>pg_backend_pid()')
@@ -117,6 +139,7 @@ def restore(spec):
         promoted=True
         state('finalizing','База заменена. Обновляются сеансы и настройки телефонии',safety_backup=safety,previous_database=old)
     except BaseException:
+        if not promoted and files:files.rollback()
         if not promoted and exists(TARGET):sql('ALTER DATABASE '+identifier(TARGET)+' WITH ALLOW_CONNECTIONS true')
         raise
     finally:
@@ -135,6 +158,10 @@ def main():
     if status['status']=='succeeded':
         old=status.get('previous_database','')
         if re.fullmatch('arm112_before_[a-f0-9]{24}',old) and exists(old):sql('DROP DATABASE '+identifier(old)+' WITH (FORCE)')
+        if spec.get('scope')=='full':
+            FilesRestore(spec['job_id'],directory,{'media':'/backup-media','runtime':'/backup-runtime'}).cleanup()
+            for name in ('bundle','extracted'):
+                if (directory/name).exists():shutil.rmtree(directory/name)
         if spec['source'].startswith('uploads/'):(ROOT/spec['source']).unlink(missing_ok=True)
         (Path(os.getenv('RESTORE_PROVISION_ROOT','/backup-provision'))/'maintenance').unlink(missing_ok=True)
         (ROOT/'.restore-request').unlink(missing_ok=True)
@@ -148,9 +175,14 @@ def main():
             suffix=spec['job_id'][:24]
             if exists('arm112_before_'+suffix) and exists(TARGET) and not exists('arm112_stage_'+suffix):
                 state('finalizing','Переключение завершено; приложение повторит завершение')
+            elif spec.get('scope')=='full' and FilesRestore(spec['job_id'],directory,{'media':'/backup-media','runtime':'/backup-runtime'}).pending():
+                state('recovering','Возвращаются прежние файлы. Работа заблокирована до завершения восстановления.')
             else:
-                message=str(exc) if isinstance(exc,RestoreError) else 'Проверка или восстановление не завершены. Текущая база сохранена; проверьте журнал backup.'
+                message=str(exc) if isinstance(exc,(RestoreError,ArchiveError)) else 'Проверка или восстановление не завершены. Текущая база сохранена; проверьте журнал backup.'
                 state('failed',message)
+                if spec.get('scope')=='full':
+                    for name in ('bundle','extracted'):
+                        shutil.rmtree(directory/name,ignore_errors=True)
                 unblock()
 
 if __name__=='__main__':

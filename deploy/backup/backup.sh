@@ -22,8 +22,8 @@ rmdir /backups/.backup-pending 2>/dev/null || true
 mkdir "$backup_work"
 pg_dump -h db -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f "$backup_work/database.dump"
 pg_restore -l "$backup_work/database.dump" >/dev/null
-tar -czf "$backup_work/media.tar.gz" -C /backup-media .
-tar -czf "$backup_work/runtime.tar.gz" -C /backup-runtime .
+tar --exclude='./.restore_stage_*' --exclude='./.restore_old_*' -czf "$backup_work/media.tar.gz" -C /backup-media .
+tar --exclude='./.restore_stage_*' --exclude='./.restore_old_*' -czf "$backup_work/runtime.tar.gz" -C /backup-runtime .
 tar -tzf "$backup_work/media.tar.gz" >/dev/null
 tar -tzf "$backup_work/runtime.tar.gz" >/dev/null
 (cd "$backup_work" && sha256sum database.dump media.tar.gz runtime.tar.gz > SHA256SUMS && sha256sum -c SHA256SUMS)
