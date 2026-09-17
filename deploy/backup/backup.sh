@@ -2,8 +2,10 @@
 set -eu
 umask 077
 mkdir -p /backups
-exec 9>/backups/.backup.lock
-flock -n 9 || { echo 'Backup already running'; exit 0; }
+if [ "${BACKUP_LOCK_HELD:-0}" != 1 ]; then
+    exec 9>/backups/.backup.lock
+    flock -n 9 || { echo 'Backup already running'; exit 0; }
+fi
 backup_stamp=$(date -u +%Y%m%dT%H%M%SZ)
 backup_bundle=arm112_${backup_stamp}_$$
 backup_work=/backups/.partial_${backup_stamp}_$$

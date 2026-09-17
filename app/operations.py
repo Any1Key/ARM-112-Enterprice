@@ -64,7 +64,7 @@ def backup_snapshot(root=None):
     return {'status':'missing' if elapsed is None else 'stale' if elapsed>=86400 else 'incomplete' if not full else 'ok',
             'age_seconds':elapsed,'size_bytes':size,'scope':['database','media','runtime'] if full else ['database'],
             'created_at':meta.get('created_at'),'running':running,'queued':queued,
-            'scheduler_alive':running or (heartbeat is not None and heartbeat<30),
+            'scheduler_alive':running or (heartbeat is not None and heartbeat<30) or (age('.restore-worker-heartbeat') is not None and age('.restore-worker-heartbeat')<30),
             'last_failed':(root/'last_error').exists(),'restore_check':read_json('last_restore_check.json'),
             'bundle':bundle if valid else None,'interval_hours':int(os.getenv('BACKUP_INTERVAL_HOURS','23'))}
 
@@ -108,6 +108,8 @@ def register_operations(app,db,current):
     @app.post('/api/operations/backup',status_code=202)
     def request_backup(u=Depends(current),s=Depends(db)):
         if u.role!='admin':raise HTTPException(403)
+        from app.restoration import maintenance
+        if maintenance():raise HTTPException(409,'Восстанавливается база данных')
         snapshot=backup_snapshot()
         if snapshot['running'] or snapshot['queued']:raise HTTPException(409,'Резервная копия уже создаётся или ожидает запуска')
         if not snapshot['scheduler_alive']:raise HTTPException(503,'Сервис резервирования недоступен. Проверьте контейнер backup')

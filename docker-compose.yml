@@ -15,7 +15,7 @@ services:
       retries: 20
     restart: unless-stopped
   backup:
-    image: postgres:16-alpine
+    build: ./deploy/backup
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-arm112}
       POSTGRES_USER: ${POSTGRES_USER:-arm112}
@@ -26,8 +26,10 @@ services:
       - ./deploy/backup/start.sh:/start.sh:ro
       - ./deploy/backup/health.sh:/health.sh:ro
       - ./deploy/backup/verify.sh:/verify.sh:ro
+      - ./deploy/backup/restore.py:/restore.py:ro
       - call_media:/backup-media:ro
       - app_data:/backup-runtime:ro
+      - sip_provision:/backup-provision
       - ${BACKUP_DIR:-./backups}:/backups
     command: ["sh", "/start.sh"]
     depends_on:

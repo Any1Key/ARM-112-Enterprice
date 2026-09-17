@@ -26,7 +26,7 @@
 | 100 пользователей / 20 сессий | Протокол локального SIP-прогона в VALIDATION.md; 100 параллельных запросов каталога | Полный профиль 100 независимых пользователей на целевом оборудовании |
 | TLS | Caddy internal TLS and SIP/WSS inside contour | TLS to PostgreSQL/Redis and corporate PKI |
 | Хранение >= 6 месяцев | Карточки, результаты, аудио и аудит хранятся 180 дней; ежедневная очистка и ручной запуск | Внешний архив и юридически утверждённая политика |
-| Ежедневный backup | Full DB/media/runtime copy every 23h, admin manual trigger, freshness monitor, SHA-256 and isolated restore drill | Off-host destination must be configured; automatic pre-deletion backup guard remains pending |
+| Ежедневный backup | Full DB/media/runtime copy every 23h, admin manual trigger/history/download, confirmed restore/upload via restricted staging DB and safety snapshot, freshness monitor, SHA-256 and isolated restore drill | Off-host destination must be configured; automatic pre-deletion backup guard remains pending |
 | Мониторинг / HA | Admin component monitor for DB/Redis/Asterisk/voice/ML/grammar/Ollama/backup | Metrics, alerting and multi-node HA |
 
 Redis сам по себе не обеспечивает отказоустойчивость. Дополнительные таблицы создаются без удаления данных; промышленное управление схемой требует миграций.

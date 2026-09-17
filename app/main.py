@@ -59,12 +59,17 @@ def db():
     s=SessionLocal()
     try: yield s
     finally: s.close()
-def token_for(u:User): return jwt.encode({'sub':str(u.id),'role':u.role,'exp':datetime.now(timezone.utc)+timedelta(hours=12)},SECRET_KEY,algorithm='HS256')
+from app.restoration import auth_epoch,maintenance
+
+def token_for(u:User): return jwt.encode({'sub':str(u.id),'role':u.role,'epoch':auth_epoch(),'exp':datetime.now(timezone.utc)+timedelta(hours=12)},SECRET_KEY,algorithm='HS256')
 def current(request:Request,s:Session=Depends(db)):
     h=request.headers.get('authorization','')
     if not h.startswith('Bearer '): raise HTTPException(401,'Требуется авторизация')
-    try: p=jwt.decode(h[7:],SECRET_KEY,algorithms=['HS256']); u=s.get(User,int(p['sub']))
-    except Exception: raise HTTPException(401,'Недействительный токен')
+    try:p=jwt.decode(h[7:],SECRET_KEY,algorithms=['HS256'])
+    except Exception:raise HTTPException(401,'Недействительный токен')
+    if p.get('epoch','')!=auth_epoch():raise HTTPException(401,'База данных восстановлена. Войдите заново.')
+    try:u=s.get(User,int(p['sub']))
+    except Exception:raise HTTPException(401,'Недействительный токен')
     if not u: raise HTTPException(401)
     state=s.get(AccountState,u.id)
     if state and state.blocked: raise HTTPException(403,"Учётная запись заблокирована")
@@ -160,6 +165,7 @@ def delete_run_data(s,run_id,remove_recording=True):
             except OSError:pass
     s.query(SessionRun).filter(SessionRun.id==run_id).delete(synchronize_session=False)
 def cleanup_expired():
+    if maintenance():return 0
     from datetime import timedelta
     cutoff=datetime.now(timezone.utc)-timedelta(days=RETENTION_DAYS)
     with SessionLocal() as s:
@@ -360,3 +366,7 @@ register_extensions(app,db,current)
 
 from app.report_details import register_report_details
 register_report_details(app,db,current)
+
+from app.restoration import register_restoration
+from app.operations import backup_catalog
+register_restoration(app,db,current,SessionLocal,engine,pwd.verify,backup_catalog)

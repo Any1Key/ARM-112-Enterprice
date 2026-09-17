@@ -1,5 +1,10 @@
 #!/bin/sh
 set -eu
+if [ -f /backups/.restore-maintenance ]; then
+    [ -f /backups/.restore-worker-heartbeat ]
+    [ "$(($(date +%s)-$(stat -c %Y /backups/.restore-worker-heartbeat)))" -lt 30 ]
+    exit 0
+fi
 [ -f /backups/latest.dump ] && [ -f /backups/latest.bundle ]
 backup_bundle=$(cat /backups/latest.bundle)
 case "$backup_bundle" in arm112_*) ;; *) exit 1;; esac
