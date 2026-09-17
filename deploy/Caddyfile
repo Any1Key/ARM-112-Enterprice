@@ -1,0 +1,13 @@
+{
+    auto_https disable_redirects
+}
+https://{$ARM_HOST} {
+    tls internal
+    handle /sip-ws {
+        rewrite * /ws
+        reverse_proxy asterisk:8088
+    }
+    handle {
+        reverse_proxy app:8000
+    }
+}

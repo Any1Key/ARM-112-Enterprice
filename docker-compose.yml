@@ -1,0 +1,133 @@
+name: arm112-trainer
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-arm112}
+      POSTGRES_USER: ${POSTGRES_USER:-arm112}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_now}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arm112} -d ${POSTGRES_DB:-arm112}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  backup:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-arm112}
+      POSTGRES_USER: ${POSTGRES_USER:-arm112}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-change_me_now}
+    volumes:
+      - ./deploy/backup/backup.sh:/backup.sh:ro
+      - ./deploy/backup/start.sh:/start.sh:ro
+      - ${BACKUP_DIR:-./backups}:/backups
+    command: ["sh", "/start.sh"]
+    depends_on:
+      db: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -f /backups/latest.dump && pg_restore -l /backups/latest.dump >/dev/null"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server","--appendonly","yes"]
+    volumes: ["redis_data:/data"]
+    restart: unless-stopped
+  app:
+    build: .
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-arm112}:${POSTGRES_PASSWORD:-change_me_now}@db:5432/${POSTGRES_DB:-arm112}
+      REDIS_URL: redis://redis:6379/0
+      ML_URL: http://ml:8091
+      GRAMMAR_URL: http://grammar:8093
+      VOICE_URL: http://voice:8092
+      TURN_SECRET: ${TURN_SECRET:-arm112-local-turn-change-me}
+      ASTERISK_HOST: asterisk
+      ASTERISK_AMI_SECRET: ${ASTERISK_AMI_SECRET:-arm112-local-ami-change-me}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    ports: ["8000:8000"]
+    volumes:
+      - app_data:/app/data/runtime
+      - sip_provision:/provision
+      - call_media:/media
+      - ${BACKUP_DIR:-./backups}:/backups:ro
+    depends_on:
+      db: {condition: service_healthy}
+    restart: unless-stopped
+  asterisk:
+    build: ./deploy/asterisk
+    profiles: ["voip"]
+    environment:
+      ASTERISK_AMI_SECRET: ${ASTERISK_AMI_SECRET:-arm112-local-ami-change-me}
+      SIP_PUBLIC_ADDRESS: ${SIP_PUBLIC_ADDRESS:-127.0.0.1}
+    ports:
+      - "5060:5060/udp"
+      - "8088:8088"
+      - "10000-10100:10000-10100/udp"
+    volumes:
+      - sip_provision:/provision
+      - call_media:/media
+    restart: unless-stopped
+  turn:
+    image: coturn/coturn:4.6.2
+    profiles: ["voip"]
+    environment:
+      TURN_SECRET: ${TURN_SECRET:-arm112-local-turn-change-me}
+    entrypoint: ["/bin/sh", "-c"]
+    command: ['exec turnserver --no-cli --no-tls --no-dtls --fingerprint --lt-cred-mech --use-auth-secret --static-auth-secret="$$TURN_SECRET" --realm=arm112.local --listening-port=3478 --min-port=49160 --max-port=49200 --log-file=stdout']
+    ports: ["3478:3478", "3478:3478/udp"]
+    restart: unless-stopped
+  voice:
+    build: ./services/voice
+    profiles: ["voip"]
+    volumes: ["call_media:/media"]
+    restart: unless-stopped
+  grammar:
+    build: ./services/grammar
+    profiles: ["ai"]
+    restart: unless-stopped
+  ml:
+    build: ./services/ml
+    profiles: ["ai"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+  gateway:
+    image: caddy:2.9.1
+    profiles: ["voip"]
+    ports: ["8443:443"]
+    environment:
+      ARM_HOST: ${ARM_HOST:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    restart: unless-stopped
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ai"]
+    volumes: ["ollama_data:/root/.ollama"]
+    restart: unless-stopped
+volumes:
+  pg_data:
+  redis_data:
+  app_data:
+  ollama_data:
+  sip_provision:
+  call_media:
+  caddy_data:
