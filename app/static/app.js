@@ -9,7 +9,7 @@ function show(id,visible){$(id).hidden=!visible;}
 function notify(message){$('notice').textContent=message;show('notice',Boolean(message));}
 async function api(path,options={}){const response=await fetch(path,{...options,headers:{'Content-Type':'application/json',...(state.token?{Authorization:'Bearer '+state.token}:{}),...options.headers}});let payload;try{payload=await response.json();}catch{payload={detail:'Сервер вернул некорректный ответ'};}if(!response.ok){if(response.status===401&&state.token&&!state.runId)logout();throw Error(typeof payload.detail==='string'?payload.detail:'Не удалось выполнить запрос. Проверьте данные.');}return payload;}
 function guarded(fn){return async event=>{try{notify('');await fn(event);}catch(error){notify(error.message);}};}
-function duration(seconds){return `${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;}
+function duration(seconds){const total=Math.max(0,Math.floor(Number(seconds)||0));const minutes=String(Math.floor(total/60)%60).padStart(2,'0');const remainder=String(total%60).padStart(2,'0');return total>=3600?`${Math.floor(total/3600)}:${minutes}:${remainder}`:`${minutes}:${remainder}`;}
 function date(value){return value?new Date(value).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}):'—';}
 function skipDate(value){return value?new Date(value).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—';}
 function updateClock(){$('clock').textContent=new Date().toLocaleString('ru-RU',{day:'2-digit',month:'long',hour:'2-digit',minute:'2-digit'});}
