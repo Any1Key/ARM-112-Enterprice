@@ -56,3 +56,5 @@
 .report-result-group>summary strong{font-size:16px}
 .report-result-group .report-table{overflow-x:auto}
 @media(max-width:600px){.report-filters{padding:14px}.report-result-group>summary{padding:14px}.report-result-group>summary span{width:100%}}
+
+#scenario-create{scroll-margin-top:24px}
