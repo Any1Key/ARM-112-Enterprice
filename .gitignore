@@ -1,8 +1,10 @@
-.env
 __pycache__/
 .pytest_cache/
 data/runtime/
 backups/
+
+.env.local
+.env.*.local
 .agents/
 .codex/
 *:Zone.Identifier
