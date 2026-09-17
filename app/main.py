@@ -307,8 +307,13 @@ def finish(run_id:int,x:FinishIn,u=Depends(current),s:Session=Depends(db)):
     return finalize_run(s,u,r,context,x,evaluate)
 
 @app.get('/api/reports')
-def reports(u=Depends(current),s:Session=Depends(db)):
+def reports(u=Depends(current),s:Session=Depends(db),started_from:datetime|None=None,started_before:datetime|None=None,student_id:int|None=None):
     q=select(SessionRun).order_by(SessionRun.id.desc())
+    if started_from and started_before and aware(started_from)>=aware(started_before):
+        raise HTTPException(422,'Начало периода должно быть раньше конца')
+    if started_from: q=q.where(SessionRun.started_at>=aware(started_from).astimezone(timezone.utc))
+    if started_before: q=q.where(SessionRun.started_at<aware(started_before).astimezone(timezone.utc))
+    if student_id is not None: q=q.where(SessionRun.student_id==student_id)
     if u.role=='student': q=q.where(SessionRun.student_id==u.id)
     names={x.id:x.username for x in s.scalars(select(User)).all()}
     titles={x.id:x.title for x in s.scalars(select(Scenario)).all()}
@@ -335,14 +340,14 @@ def audit_events(u=Depends(current),s:Session=Depends(db)):
 register_routes(app,db,current,evaluate,pwd)
 
 @app.get('/api/reports/export.csv')
-def export_reports(u=Depends(current),s:Session=Depends(db)):
+def export_reports(u=Depends(current),s:Session=Depends(db),started_from:datetime|None=None,started_before:datetime|None=None,student_id:int|None=None):
     import csv
     import io
     from fastapi.responses import Response
     buffer=io.StringIO()
     writer=csv.writer(buffer,delimiter=';')
     writer.writerow(['Сессия','Сценарий','Обучающийся','Начало','Завершение','Первичная оценка','Экспертная оценка','Время обработки, сек','Время реакции, сек','Норматив, сек','Отклонение, сек','Ошибки','Комментарий преподавателя','Режим','Регистрация','Канал','Время после регистрации, сек','Пропуски','Тип студента','Тип эталона','Адрес студента','Адрес эталона','Заявитель','АОН','Обратный номер','Пострадавшие','Службы студента','Не выбранные службы','Описание студента','Комментарий студента'])
-    rows=reports(u,s)
+    rows=reports(u,s,started_from,started_before,student_id)
     def cell(value):
         value=str(value) if value is not None else ''
         return "'"+value if value.startswith(('=','+','-','@','\t','\r')) else value
@@ -355,7 +360,7 @@ def export_reports(u=Depends(current),s:Session=Depends(db)):
         events=events_for(s,run)
         writer.writerow([cell(value) for value in [row['id'],row['scenario_title'],row['student_name'],row['started_at'],row['finished_at'],row['score'],review.get('score'),report.get('elapsed_seconds'),report.get('reaction_seconds'),report.get('norm_seconds'),report.get('time_deviation_seconds'),'; '.join(report.get('errors',[])),review.get('comment'),
             'ДДС' if snapshot.get('mode')=='dispatch' else '112',context.registered_at if context else None,card.get('channel'),postprocessing_seconds(run,context,events),sum(e.kind=='card.skip' for e in events),card.get('incident_type'),expected.get('incident_type'),card.get('address'),expected.get('address'),card.get('caller_name'),card.get('aon'),card.get('caller_phone'),card.get('victims_count'),', '.join(card.get('services',[])),', '.join(sorted(set(expected.get('services',[]))-set(card.get('services',[])))) if expected else '',card.get('description'),card.get('operator_comment')]])
-    audit(s,u,'report.export',{'count':len(rows)})
+    audit(s,u,'report.export',{'count':len(rows),'started_from':started_from.isoformat() if started_from else None,'started_before':started_before.isoformat() if started_before else None,'student_id':student_id})
     return Response(('\ufeff'+buffer.getvalue()).encode('utf-8'),media_type='text/csv; charset=utf-8',headers={'Content-Disposition':'attachment; filename="arm112-results.csv"'})
 
 from app.telephony import register_telephony

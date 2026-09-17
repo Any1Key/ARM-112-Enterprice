@@ -58,3 +58,32 @@ def test_recordings_are_per_call_and_legacy_is_not_attributed_to_new_call(client
     assert all(c['recording_available'] for c in detail['calls'])
     assert client.get(f'/api/telephony/runs/{identifier}/recording?call_id=999999',headers=student).status_code==404
     assert len(client.get(f'/api/runs/{identifier}/attachments',headers=student).json())==2
+
+
+def test_report_period_filters_match_csv_and_keep_student_permissions(client):
+    import csv,io
+    from app import main
+    student,teacher=auth(client,'student'),auth(client,'teacher')
+    scenario=create_scenario(client,teacher,assigned=True)
+    identifier=client.post(f'/api/runs/{scenario}/start',headers=student).json()['run_id']
+    from datetime import datetime,timezone
+    with main.SessionLocal() as session:
+        run=session.get(SessionRun,identifier)
+        run.started_at=datetime(2026,3,31,21,0,tzinfo=timezone.utc)
+        session.commit()
+    params={'started_from':'2026-03-31T21:00:00Z','started_before':'2026-04-01T21:00:00Z','student_id':3}
+    rows=client.get('/api/reports',headers=teacher,params=params)
+    assert rows.status_code==200 and [r['id'] for r in rows.json()]==[identifier]
+    offset={**params,'started_from':'2026-04-01T00:00:00+03:00','started_before':'2026-04-02T00:00:00+03:00'}
+    assert [r['id'] for r in client.get('/api/reports',headers=teacher,params=offset).json()]==[identifier]
+    exported=client.get('/api/reports/export.csv',headers=teacher,params=params)
+    parsed=list(csv.reader(io.StringIO(exported.content.decode('utf-8-sig')),delimiter=';'))
+    assert len(parsed)==2 and parsed[1][0]==str(identifier)
+    outside={**params,'started_from':'2026-03-30T21:00:00Z','started_before':'2026-03-31T21:00:00Z'}
+    assert client.get('/api/reports',headers=teacher,params=outside).json()==[]
+    assert len(list(csv.reader(io.StringIO(client.get('/api/reports/export.csv',headers=teacher,params=outside).content.decode('utf-8-sig')),delimiter=';')))==1
+    assert client.get('/api/reports',headers=student,params={**params,'student_id':1}).json()==[]
+    assert len(list(csv.reader(io.StringIO(client.get('/api/reports/export.csv',headers=student,params={**params,'student_id':1}).content.decode('utf-8-sig')),delimiter=';')))==1
+    invalid={**params,'started_from':params['started_before']}
+    assert client.get('/api/reports',headers=teacher,params=invalid).status_code==422
+    assert client.get('/api/reports/export.csv',headers=teacher,params=invalid).status_code==422

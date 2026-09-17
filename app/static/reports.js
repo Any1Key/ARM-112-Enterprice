@@ -69,3 +69,50 @@ renderResult=function(container,report,actions=false){
     detail.addEventListener('click',guarded(async()=>{switchView('reports');await openReportDetail(report.run_id);}));container.append(detail);
   }
 };
+
+// Dates are local calendar days; the API receives an exclusive end in UTC.
+const reportFilters=el('div','panel report-filters');
+function reportControl(label,node){const wrap=el('label');wrap.append(el('span','',label),node);reportFilters.append(wrap);return node;}
+const reportGrouping=reportControl('Группировка',el('select'));
+for(const [value,label] of [['student','По студентам'],['day','По датам'],['none','Общий список']]){const option=el('option','',label);option.value=value;reportGrouping.append(option);}
+const reportStudent=reportControl('Студент',el('select'));
+const reportFrom=reportControl('С даты',el('input'));reportFrom.type='date';
+const reportTo=reportControl('По дату включительно',el('input'));reportTo.type='date';
+const reportReset=el('button','secondary','Сбросить фильтры');reportReset.type='button';reportFilters.append(reportReset);
+const reportSummary=el('p','source-meta');
+$('reports-list').before(reportFilters,reportSummary);
+let reportFilterOwner=null;
+function reportLocalDay(value){const d=new Date(value);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
+function reportPeriod(){
+  if(reportFrom.value&&reportTo.value&&reportFrom.value>reportTo.value)throw Error('Дата начала должна быть не позже даты окончания');
+  const params=new URLSearchParams();
+  if(reportFrom.value)params.set('started_from',new Date(reportFrom.value+'T00:00:00').toISOString());
+  if(reportTo.value){const end=new Date(reportTo.value+'T00:00:00');end.setDate(end.getDate()+1);params.set('started_before',end.toISOString());}
+  if(reportStudent.value)params.set('student_id',reportStudent.value);
+  return params;
+}
+function reportFilteredRows(){reportPeriod();return state.reports.filter(r=>(!reportStudent.value||String(r.student_id)===reportStudent.value)&&(!reportFrom.value||reportLocalDay(r.started_at)>=reportFrom.value)&&(!reportTo.value||reportLocalDay(r.started_at)<=reportTo.value));}
+function reportStats(rows){const graded=rows.filter(r=>!r.report?.skipped&&r.score!==null&&r.score!==undefined);const completed=rows.filter(r=>r.finished_at&&!r.report?.skipped).length;return `${rows.length} попыток · завершено ${completed} · пропущено ${rows.filter(r=>r.report?.skipped).length} · средний балл ${graded.length?(graded.reduce((sum,r)=>sum+r.score,0)/graded.length).toFixed(1):'—'}`;}
+renderReports=function(){
+  const owner=state.role+':'+(state.username||$('who').textContent);
+  if(reportFilterOwner!==owner){reportFilterOwner=owner;reportFrom.value='';reportTo.value='';reportStudent.replaceChildren();reportGrouping.value=state.role==='student'?'day':'student';show('report-detail',false);}
+  const selected=reportStudent.value;reportStudent.replaceChildren(el('option','','Все студенты'));reportStudent.firstChild.value='';
+  const students=new Map(state.reports.map(r=>[String(r.student_id),r.student_name||`Студент №${r.student_id}`]));
+  for(const [id,name] of [...students].sort((a,b)=>a[1].localeCompare(b[1],'ru'))){const option=el('option','',name);option.value=id;reportStudent.append(option);}
+  reportStudent.value=students.has(selected)?selected:'';reportStudent.parentElement.hidden=state.role==='student';
+  const container=$('reports-list');const opened=new Set([...container.querySelectorAll('details[open][data-report-group]')].map(g=>g.dataset.reportGroup));container.replaceChildren();
+  let rows;try{rows=reportFilteredRows();}catch(e){reportSummary.textContent=e.message;return;}
+  reportSummary.textContent=reportStats(rows)+' · период по дате начала обработки';
+  if(!rows.length){container.append(el('p','empty-table','По выбранным фильтрам результатов нет.'));return;}
+  function appendRows(target,items){const holder=el('div','report-table');target.append(holder);table(holder,['Сценарий','Студент','Начало','Результат','Время','Отчёт'],items.map(run=>{const title=el('span','',run.scenario_title||`Сценарий №${run.scenario_id}`);title.append(el('small','',`Попытка №${run.id}`));const score=el('span','score-pill'+(run.score!==null&&run.score<60?' low':''),run.report?.skipped?'Пропущена':run.score===null?'В процессе':`${run.score} / 100`);const button=el('button','table-button','Разбор →');button.addEventListener('click',guarded(()=>openReportDetail(run.id)));return [title,run.student_name||`№${run.student_id}`,date(run.started_at),score,run.report?duration(run.report.elapsed_seconds):'—',button];}));}
+  if(reportGrouping.value==='none'){appendRows(container,rows);return;}
+  const groups=new Map();for(const row of rows){const key=reportGrouping.value==='day'?reportLocalDay(row.started_at):String(row.student_id);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(row);}
+  const entries=[...groups];entries.sort((a,b)=>reportGrouping.value==='day'?b[0].localeCompare(a[0]):(a[1][0].student_name||'').localeCompare(b[1][0].student_name||'','ru'));
+  for(const [key,items] of entries){const group=el('details','report-result-group');group.dataset.reportGroup=owner+':'+reportGrouping.value+':'+key;group.open=entries.length===1||opened.has(group.dataset.reportGroup);const heading=el('summary');const title=reportGrouping.value==='day'?new Date(key+'T12:00:00').toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'}):items[0].student_name||`Студент №${key}`;heading.append(el('strong','',title),el('span','source-meta',reportStats(items)));group.append(heading);container.append(group);appendRows(group,items);}
+};
+for(const control of [reportGrouping,reportStudent,reportFrom,reportTo])control.addEventListener('change',()=>{show('report-detail',false);renderReports();});
+reportReset.addEventListener('click',()=>{reportStudent.value='';reportFrom.value='';reportTo.value='';renderReports();});
+$('export-reports').addEventListener('click',guarded(async()=>{
+  const params=reportPeriod();const button=$('export-reports');button.disabled=true;
+  try{const response=await fetch('/api/reports/export.csv?'+params,{headers:{Authorization:'Bearer '+state.token}});if(!response.ok)throw Error('Не удалось выгрузить отчёт');const url=URL.createObjectURL(await response.blob());const link=el('a');link.href=url;link.download=`arm112-results_${reportFrom.value||'начало'}_${reportTo.value||'сегодня'}.csv`;link.click();setTimeout(()=>URL.revokeObjectURL(url),10000);}finally{button.disabled=false;}
+}));
