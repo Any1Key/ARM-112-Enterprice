@@ -484,9 +484,11 @@ def register_routes(app,db,current,evaluate,pwd):
         assert_teacher(u)
         return [{'id':x.id,'username':x.username} for x in s.scalars(select(User).where(User.role=='student'))]
 
-    @app.post('/api/lessons')
-    def create_lesson(x:LessonIn,u=Depends(current),s=Depends(db)):
-        assert_teacher(u)
+    def validate_lesson(x,u,s):
+        x.title=x.title.strip()
+        if not x.title:raise HTTPException(422,'Введите название занятия')
+        x.scenario_ids=list(dict.fromkeys(x.scenario_ids));x.student_ids=list(dict.fromkeys(x.student_ids))
+        if x.mode=='call':x.service_code='TERRITORY'
         for identifier in set(x.scenario_ids):
             scenario=s.get(Scenario,identifier)
             if not scenario or scenario.created_by!=u.id: raise HTTPException(403,'Выберите свои сценарии')
@@ -498,7 +500,22 @@ def register_routes(app,db,current,evaluate,pwd):
         for identifier in set(x.student_ids):
             student=s.get(User,identifier)
             if not student or student.role!='student': raise HTTPException(422,'Неверный обучающийся')
+
+    @app.post('/api/lessons')
+    def create_lesson(x:LessonIn,u=Depends(current),s=Depends(db)):
+        assert_teacher(u);validate_lesson(x,u,s)
         lesson=Lesson(**x.model_dump(),teacher_id=u.id);s.add(lesson);s.flush();log(s,u,'lesson.create',{'lesson_id':lesson.id});s.commit();return {'id':lesson.id}
+
+    @app.put('/api/lessons/{lesson_id}')
+    def update_lesson(lesson_id:int,x:LessonIn,u=Depends(current),s=Depends(db)):
+        assert_teacher(u)
+        lesson=s.scalar(select(Lesson).where(Lesson.id==lesson_id).with_for_update())
+        if not lesson:raise HTTPException(404,'Занятие не найдено')
+        if lesson.teacher_id!=u.id:raise HTTPException(403)
+        if lesson.status!='prepared':raise HTTPException(409,'Можно редактировать только подготовленное занятие')
+        validate_lesson(x,u,s)
+        for key,value in x.model_dump().items():setattr(lesson,key,value)
+        log(s,u,'lesson.update',{'lesson_id':lesson.id});s.commit();return {'id':lesson.id}
 
     @app.get('/api/lessons')
     def lessons(u=Depends(current),s=Depends(db)):
