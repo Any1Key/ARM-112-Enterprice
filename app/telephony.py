@@ -47,6 +47,12 @@ def ami_action(action,**fields):
                 return reply
     finally:stream.close();sock.close()
 
+def hardware_password(account):
+    # Stable, separately scoped credential; existing browser registration stays valid.
+    alphabet='abcdefghjkmnpqrstuvwxyz23456789'
+    digest=hmac.new(account.password.encode(),('arm112-hardware-v1:'+account.username).encode(),hashlib.sha256).digest()
+    return ''.join(alphabet[int.from_bytes(digest[i*2:i*2+2],'big')%len(alphabet)] for i in range(10))
+
 def write_accounts(s):
     blocked={x.user_id for x in s.scalars(select(AccountState).where(AccountState.blocked.is_(True)))}
     students=set(s.scalars(select(User.id).where(User.role=='student')))
@@ -75,7 +81,7 @@ direct_media=no
 type=auth
 auth_type=userpass
 username={name}
-password={account.password}
+password={hardware_password(account) if device=='hardware' else account.password}
 [{name}]
 type=aor
 max_contacts=1
@@ -184,7 +190,7 @@ def register_telephony(app,db,current,session_factory):
                 s.add(Audit(user_id=u.id,action='sip.account',details={'username':account.username,'device':device,'recording_per_call':True}));s.commit()
         except (OSError,ConnectionError) as exc:raise HTTPException(503,'Asterisk недоступен') from exc
         turn_username=str(int(time.time())+3600)+':'+str(u.id)
-        return {'username':account.username+('-hw' if device=='hardware' else ''),'device':device,'transport':'UDP' if device=='hardware' else 'WebSocket','codecs':['G.711A','G.711U','G.722','Opus'] if device=='hardware' else ['G.711U','G.711A'],'registrar':os.getenv('SIP_PUBLIC_ADDRESS',request.url.hostname) if device=='hardware' else request.url.hostname,'password':account.password,'domain':request.url.hostname,'ws_path':'/sip-ws','ws_port':8088,'sip_port':5060,'ice_servers':[{'urls':'turn:'+request.url.hostname+':3478?transport=tcp','username':turn_username,'credential':base64.b64encode(hmac.new(os.getenv('TURN_SECRET','arm112-local-turn-change-me').encode(),turn_username.encode(),hashlib.sha1).digest()).decode()}]}
+        return {'username':account.username+('-hw' if device=='hardware' else ''),'device':device,'transport':'UDP' if device=='hardware' else 'WebSocket','codecs':['G.711A','G.711U','G.722','Opus'] if device=='hardware' else ['G.711U','G.711A'],'registrar':os.getenv('SIP_PUBLIC_ADDRESS',request.url.hostname) if device=='hardware' else request.url.hostname,'password':hardware_password(account) if device=='hardware' else account.password,'domain':request.url.hostname,'ws_path':'/sip-ws','ws_port':8088,'sip_port':5060,'ice_servers':[{'urls':'turn:'+request.url.hostname+':3478?transport=tcp','username':turn_username,'credential':base64.b64encode(hmac.new(os.getenv('TURN_SECRET','arm112-local-turn-change-me').encode(),turn_username.encode(),hashlib.sha1).digest()).decode()}]}
     @app.post('/api/telephony/runs/{run_id}/call')
     def call(run_id:int,device:str='browser',u=Depends(current),s=Depends(db)):
         if device not in ('browser','hardware'):raise HTTPException(422,'Неизвестное устройство')

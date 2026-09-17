@@ -21,11 +21,17 @@ def test_sip_access_and_account_provision_are_per_student(client,monkeypatch,tmp
 
     hardware=client.post('/api/telephony/account?device=hardware',headers=student).json()
     assert hardware['username']==data['username']+'-hw' and hardware['transport']=='UDP'
+    assert len(hardware['password'])==10 and hardware['password']!=data['password']
+    assert all(c in 'abcdefghjkmnpqrstuvwxyz23456789' for c in hardware['password'])
+    assert client.post('/api/telephony/account?device=hardware',headers=student).json()['password']==hardware['password']
     provision=(tmp_path/'sip'/'users.conf').read_text()
     hw=provision.split('['+hardware['username']+']',1)[1].split('['+hardware['username']+'-auth]',1)[0]
     assert 'webrtc=no' in hw and 'media_encryption=no' in hw and 'transport=transport-udp' in hw
     assert 'set_var=ARM_USER_ID=' in hw
     assert 'from_domain=arm112.local' in provision
+    hardware_auth=provision.split('['+hardware['username']+'-auth]',1)[1].split('['+hardware['username']+']',1)[0]
+    assert 'password='+hardware['password']+'\n' in hardware_auth
+    assert 'password='+data['password']+'\n' in provision
     assert len(reloads)==1, 'Reading the hardware profile must not reload PJSIP'
     again=client.post('/api/telephony/account',headers=student)
     assert again.status_code==200 and len(reloads)==1
