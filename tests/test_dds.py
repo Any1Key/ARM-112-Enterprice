@@ -271,3 +271,34 @@ def test_dds_report_calls_show_service_recipient_recording_and_do_not_reuse_112_
     assert evidence['recording_available'] is True
     response=client.get(f'/api/telephony/runs/{id}/recording?call_id={call_id}',headers=teacher)
     assert response.status_code==200 and response.content==b'student and service recording'
+
+
+def test_dds_template_without_students_can_be_edited_and_assigned_to_different_groups(client):
+    teacher,student,admin=auth(client,'teacher'),auth(client,'student'),auth(client,'admin')
+    scenarios=build(client,teacher,['clean','mixed'],count=2)
+    payload={'title':'Заготовка ДДС без группы','mode':'dds','require_sip':True,'scenario_ids':[scenarios[0]['id']]}
+    response=client.post('/api/lesson-templates',headers=teacher,json=payload)
+    assert response.status_code==200,response.text
+    id=response.json()['id'];path=f'/api/lesson-templates/{id}'
+    assert client.get('/api/lessons',headers=student).json()==[]
+    assert client.get('/api/scenarios',headers=student).json()==[]
+    saved=next(t for t in client.get('/api/lesson-templates',headers=teacher).json() if t['id']==id)
+    assert saved['student_ids']==[]
+    updated={**payload,'title':'ДДС: набор из двух билетов','scenario_ids':[x['id'] for x in scenarios]}
+    assert client.put(path,headers=teacher,json=updated).status_code==200
+    new_student=client.post('/api/users',headers=admin,json={'username':'dds_later_group','password':'laterGroup12345','role':'student'})
+    assert new_student.status_code==200,new_student.text
+    other_id=new_student.json()['id']
+    assigned=[]
+    for group in [[3],[other_id]]:
+        response=client.post(path+'/assign',headers=teacher,json={'student_ids':group})
+        assert response.status_code==200,response.text
+        assigned.append(response.json()['id'])
+    assert len(set(assigned))==2
+    saved=next(t for t in client.get('/api/lesson-templates',headers=teacher).json() if t['id']==id)
+    assert saved['student_ids']==[] and saved['require_sip'] is True
+    assert client.put(path,headers=teacher,json={**updated,'scenario_ids':[scenarios[1]['id']]}).status_code==200
+    lessons=client.get('/api/lessons',headers=teacher).json()
+    for row in (x for x in lessons if x['id'] in assigned):
+        assert row['scenario_ids']==updated['scenario_ids'] and row['require_sip'] is True
+    assert {x['id'] for x in client.get('/api/scenarios',headers=student).json()}==set(updated['scenario_ids'])
