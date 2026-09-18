@@ -6,5 +6,5 @@ RUN mkdir -p /models && for voice in dmitri irina ruslan denis; do \
       curl -fL --retry 3 -o /models/ru_RU-${voice}-medium.onnx.json https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/${voice}/medium/ru_RU-${voice}-medium.onnx.json; \
     done
 WORKDIR /service
-COPY server.py selection.py ./
+COPY server.py selection.py pronunciation.py pronunciation_ru.json ./
 CMD ["uvicorn","server:app","--host","0.0.0.0","--port","8092"]
