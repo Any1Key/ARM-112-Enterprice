@@ -640,7 +640,7 @@ def register_routes(app,db,current,evaluate,pwd):
               status:str=Query(default='',max_length=500),services:str=Query(default='',max_length=1000),channels:str=Query(default='',max_length=1000),
               caller:str=Query(default='',max_length=200),description:str=Query(default='',max_length=1000),incident:str=Query(default='',max_length=1000),
               operator:str=Query(default='',max_length=100),workstation:str=Query(default='',max_length=100),card_number:int|None=Query(default=None,ge=1),
-              date_from:datetime|None=None,date_to:datetime|None=None,unread_sms:bool=False,limit:int=Query(default=200,ge=1,le=200),offset:int=Query(default=0,ge=0),
+              date_from:datetime|None=None,date_to:datetime|None=None,date_before:datetime|None=None,unread_sms:bool=False,limit:int=Query(default=200,ge=1,le=200),offset:int=Query(default=0,ge=0),
               u=Depends(current),s:Session=Depends(db)):
         query=select(SessionRun).order_by(SessionRun.id.desc())
         if u.role=='student':query=query.where(SessionRun.student_id==u.id)
@@ -652,8 +652,10 @@ def register_routes(app,db,current,evaluate,pwd):
         for key,value in [('address',address),('descriptive_address',descriptive_address),('borough',borough),('district',district)]:
             if value:query=query.where(SessionRun.answers[key].as_string().ilike(pattern(value),escape='\\'))
         if source:query=query.where(SessionRun.answers['source_system'].as_string()==source)
-        if date_from:query=query.where(SessionRun.started_at>=aware(date_from))
-        if date_to:query=query.where(SessionRun.started_at<=aware(date_to))
+        if date_from and ((date_before and aware(date_from)>=aware(date_before)) or (date_to and aware(date_from)>aware(date_to))):raise HTTPException(422,'Некорректный период поиска')
+        if date_from:query=query.where(SessionRun.started_at>=aware(date_from).astimezone(timezone.utc))
+        if date_to:query=query.where(SessionRun.started_at<=aware(date_to).astimezone(timezone.utc))
+        if date_before:query=query.where(SessionRun.started_at<aware(date_before).astimezone(timezone.utc))
         if card_number is not None:query=query.where(SessionRun.id==card_number)
         if caller:query=query.where(or_(*[SessionRun.answers[key].as_string().ilike(pattern(caller),escape='\\') for key in ['caller_name','aon','caller_phone','on_site_phone']]))
         for key,value in [('description',description),('incident_type',incident)]:

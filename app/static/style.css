@@ -58,3 +58,11 @@
 @media(max-width:600px){.report-filters{padding:14px}.report-result-group>summary{padding:14px}.report-result-group>summary span{width:100%}}
 
 #scenario-create{scroll-margin-top:24px}
+
+#card-search{display:flex;flex-wrap:wrap;gap:12px;align-items:end;padding:16px!important}
+#card-search>label{display:grid;gap:6px;flex:1;min-width:160px}
+#card-search>label input,#card-search>label select{margin:0;width:100%;min-width:0;min-height:40px}
+#card-search>#card-query{flex:2;min-width:220px;margin:0;min-height:40px}
+#card-search>details{flex-basis:100%;order:2;margin:0}
+#card-search>button{min-height:40px}
+@media(max-width:600px){#card-search>label,#card-search>#card-query{flex-basis:100%;min-width:0}}

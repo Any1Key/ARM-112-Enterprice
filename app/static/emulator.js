@@ -10,13 +10,13 @@ for(const button of document.querySelectorAll('[data-view]')){const icon=button.
 const heading=el('div','source-grid-head');for(const value of ['','Важн.','ЧС','Опер.','АРМ','Номер','Дата','Время','Тип происшествия','Повт.','Статус','Адрес','Проверена'])heading.append(el('span','',value));$('card-feed').before(heading);
 const footer=el('div','journal-footer','Учебный журнал · до 200 последних доступных карточек');$('card-feed').after(footer);
 
-const originalDomainLoad=domainLoad;domainLoad=async()=>{await originalDomainLoad();const away=document.querySelector('#incident-form [data-flag="victims_away"]');if(away&&!flagTop.contains(away))flagTop.insertBefore(away.closest("label"),flagTop.children[1]);};
+const originalDomainLoad=domainLoad;domainLoad=async()=>{await originalDomainLoad();newCard.hidden=state.role!=='student';const away=document.querySelector('#incident-form [data-flag="victims_away"]');if(away&&!flagTop.contains(away))flagTop.insertBefore(away.closest("label"),flagTop.children[1]);};
 const addressFields=form.querySelector('.address-fields');
 function addressRow(names,kind){const row=el('div','address-row '+kind);for(const name of names)row.append($(name).closest('label'));return row;}
 const addressRows=[addressRow(['country','region','city'],'three'),addressRow(['object-name','borough','district'],'three'),addressRow(['street','house','building'],'street'),addressRow(['structure','apartment','entrance','floor','access-code'],'five')];
 const descriptive=$('descriptive-address').closest('label');addressFields.replaceChildren(...addressRows,descriptive);
 const summary=$('address').closest('label');summary.classList.add('address-summary');addressFields.before(summary);
-const newCard=el('button','journal-new-card','Создать новую карточку');newCard.type='button';newCard.addEventListener('click',()=>{switchView('training');document.querySelector('.scenario-panel').classList.remove('collapsed');});document.querySelector('.topbar').append(newCard);
+const newCard=el('button','journal-new-card','Создать новую карточку');newCard.type='button';newCard.hidden=true;newCard.addEventListener('click',()=>{if(state.role!=='student')return;switchView('training');document.querySelector('.scenario-panel').classList.remove('collapsed');});document.querySelector('.topbar').append(newCard);
 const originalRestoreRun=restoreRun;restoreRun=async run=>{switchView('training');await originalRestoreRun(run);document.querySelector('.scenario-panel').classList.add('collapsed');};
 const arrangeSourceFlags=()=>{for(const [id,text] of [['victims','Пострадавшие'],['access-blocked','Нет доступа / Заблокированные'],['no-contact','нет контакта'],['call-lost','срыв звонка']]){const input=$(id);input.closest('label').replaceChildren(input,document.createTextNode(text));}};arrangeSourceFlags();
 

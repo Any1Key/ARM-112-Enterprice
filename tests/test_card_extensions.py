@@ -171,3 +171,26 @@ def test_sms_does_not_assign_unpublished_or_dispatch_scenarios(client):
     dispatch=create_scenario(client,teacher,mode='dispatch')
     response=client.post('/api/sms/incoming',headers=teacher,json={**message,'scenario_id':dispatch})
     assert response.status_code==422
+
+
+def test_journal_period_and_student_filters_apply_before_pagination(client):
+    from datetime import datetime,timezone
+    from app import main
+    from app.models import SessionRun
+    student,teacher=auth(client,'student'),auth(client,'teacher')
+    run=start(client,student,teacher)
+    identifier=run['run_id']
+    with main.SessionLocal() as session:
+        saved=session.get(SessionRun,identifier)
+        saved.started_at=datetime(2026,3,31,21,0,tzinfo=timezone.utc)
+        session.commit()
+    params={'date_from':'2026-04-01T00:00:00+03:00','date_before':'2026-04-02T00:00:00+03:00','student_id':3,'limit':10}
+    response=client.get('/api/cards',headers=teacher,params=params)
+    assert response.status_code==200,response.text
+    assert [r['run_id'] for r in response.json()]==[identifier]
+    assert client.get('/api/cards',headers=teacher,params={**params,'student_id':1}).json()==[]
+    assert client.get('/api/cards',headers=teacher,params={**params,'offset':10}).json()==[]
+    assert client.get('/api/cards',headers=teacher,params={**params,'date_from':'2026-03-31T00:00:00+03:00','date_before':params['date_from']}).json()==[]
+    assert client.get('/api/cards',headers=teacher,params={**params,'date_before':params['date_from']}).status_code==422
+    # The student ID parameter cannot grant another user's history.
+    assert [r['run_id'] for r in client.get('/api/cards',headers=student,params={**params,'student_id':1}).json()]==[identifier]
