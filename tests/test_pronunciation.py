@@ -60,3 +60,14 @@ def test_every_stress_override_has_a_russian_dictionary_source():
     verified={word for source in SOURCES for word in source['forms']}
     assert verified==set(WORDS)|set(CONTEXTUAL_WORDS)
     assert all(source['url'].startswith('https://gramota.ru/') for source in SOURCES)
+
+
+def test_active_corrections_are_only_verified_phone_genitive_phrases():
+    from services.voice.verified_phrases import correct_verified_phrases
+    assert correct_verified_phrases('Звоню с того же номера.')=='Звоню с того же но́мера.'
+    assert correct_verified_phrases('С этого же номера.')=='С этого же но́мера.'
+    assert correct_verified_phrases('С ТОГО ЖЕ НОМЕРА')=='С ТОГО ЖЕ НО́МЕРА'
+    text='Номера автомобилей; номера квартир. С того же номе́ра.'
+    assert correct_verified_phrases(text)==text
+    text='Элиста, Кленовая. Обрыв проводов. Телефон +7 921 097 42 70.'
+    assert correct_verified_phrases(text)==text
