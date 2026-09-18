@@ -32,7 +32,7 @@ def cardinal(number: int) -> str:
 def prepare_number_text(text: str) -> str:
     def phone(match):
         prefix='плюс семь' if match[1]=='+7' else 'восемь'
-        return prefix+', '+', '.join(' '.join(_DIGITS[int(d)] for d in group) for group in match.groups()[1:])
+        return prefix+', '+', '.join((' '.join(_DIGITS[int(d)] for d in group) if group.startswith('0') else cardinal(int(group))) for group in match.groups()[1:])
     text=_PHONE.sub(phone,text)
     def named(match):
         value=match[2]

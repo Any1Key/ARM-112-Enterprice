@@ -8,7 +8,7 @@ def test_russian_cardinal(number,spoken):
 
 
 def test_phone_numbers_preserve_every_digit_and_group():
-    expected='плюс семь, девять два один, ноль девять семь, четыре два, семь ноль'
+    expected='плюс семь, девятьсот двадцать один, ноль девять семь, сорок два, семьдесят'
     for number in ['+7 921 097 42 70','+7(921)097-42-70','+79210974270']:
         assert prepare_number_text(number)==expected
     assert prepare_number_text('8 (921) 097-42-70')==expected.replace('плюс семь','восемь')
@@ -24,3 +24,9 @@ def test_named_numbers_without_blind_grammar_changes():
     # Re-running processing cannot turn Russian words into another number.
     prepared=prepare_number_text('Дом 26. Телефон +7 921 097 42 70.')
     assert prepare_number_text(prepared)==prepared
+
+
+def test_phone_groups_read_whole_unless_they_start_with_zero():
+    assert prepare_number_text('+7 921 097 48 70')=='плюс семь, девятьсот двадцать один, ноль девять семь, сорок восемь, семьдесят'
+    assert prepare_number_text('+7 900 000 01 00')=='плюс семь, девятьсот, ноль ноль ноль, ноль один, ноль ноль'
+    assert prepare_number_text('+7 999 123 10 99')=='плюс семь, девятьсот девяносто девять, сто двадцать три, десять, девяносто девять'
