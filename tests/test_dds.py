@@ -188,3 +188,63 @@ def test_teacher_stop_closes_active_dds_sip_call(client,monkeypatch):
     with SessionLocal() as s:
         call=s.get(VoipCall,cid);assert call.state=='cancelled' and call.ended_at
     assert ('Hangup',{'Channel':'PJSIP/arm3-test'}) in actions
+
+
+@pytest.mark.parametrize('complete',[False,True])
+def test_required_sip_template_preserves_policy_and_scores_without_blocking_finish(client,complete):
+    from app.main import SessionLocal
+    from datetime import datetime,timezone
+    teacher,student=auth(client,'teacher'),auth(client,'student')
+    scenario=build(client,teacher,['clean'])[0];gold=scenario['expected']['dds_gold']
+    payload={'title':'Оценка телефонии','mode':'dds','require_sip':True,'scenario_ids':[scenario['id']],'student_ids':[]}
+    response=client.post('/api/lesson-templates',headers=teacher,json=payload)
+    assert response.status_code==200,response.text
+    template=response.json()['id']
+    assert next(x for x in client.get('/api/lesson-templates',headers=teacher).json() if x['id']==template)['require_sip'] is True
+    lesson_id=client.post(f'/api/lesson-templates/{template}/assign',headers=teacher,json={'student_ids':[3]}).json()['id']
+    assert next(x for x in client.get('/api/lessons',headers=student).json() if x['id']==lesson_id)['require_sip'] is True
+    assert client.post(f'/api/lessons/{lesson_id}/start',headers=teacher).status_code==200
+    run=client.post(f'/api/lessons/{lesson_id}/next',headers=student).json();id=run['run_id']
+    assert run['require_sip'] is True
+    run=validation(client,student,run,gold,'correct').json()
+    message={'service':gold['services'][0],'receiver':'Дежурный','message':gold['address']+' '+gold['description'],'outcome':'accepted'}
+    assert client.post(f'/api/dds/runs/{id}/handoff',headers=student,json=message).status_code==409
+    # Historical/injected text evidence cannot earn telephone points.
+    with SessionLocal() as s:
+        s.add(CardEvent(run_id=id,user_id=3,kind='dds.handoff',data={**message,'transport':'Текстовая симуляция','call_id':None}));s.commit()
+    if complete:
+        for service in gold['services']:
+            with SessionLocal() as s:
+                call=VoipCall(run_id=id,state='ended',sound_key='a'*64,answered_at=datetime.now(timezone.utc),ended_at=datetime.now(timezone.utc));s.add(call);s.flush();call_id=call.id
+                s.add(CardEvent(run_id=id,user_id=3,kind='dds.call.prepared',data={'call_id':call_id,'service':service}));s.commit()
+            response=client.post(f'/api/dds/runs/{id}/handoff',headers=student,json={**message,'service':service,'call_id':call_id})
+            assert response.status_code==200,response.text
+    response=client.post(f'/api/runs/{id}/finish',headers=student,json={})
+    assert response.status_code==200,response.text
+    report=response.json();assert report['dds']['require_sip'] is True
+    import csv,io
+    rows=list(csv.DictReader(io.StringIO(client.get('/api/reports/export.csv',headers=teacher).content.decode('utf-8-sig')),delimiter=';'))
+    exported=next(row for row in rows if row['Сессия']==str(id))
+    assert exported['Учёт SIP-звонков ДДС']=='Да'
+    assert bool(exported['Службы без завершённого звонка ДДС']) is not complete
+    if complete:
+        assert report['score']==100 and not report['dds']['pending_sip_services'] and not report['dds']['missing_call_services']
+    else:
+        assert report['score']==75 and report['parts']['Передача информации']==0
+        assert report['dds']['missing_call_services']==sorted(gold['services'])
+        assert report['dds']['pending_sip_services']==sorted(gold['services'])
+        evidence=client.get(f'/api/reports/{id}',headers=teacher).json()
+        assert evidence['report']['dds']['missing_call_services']==sorted(gold['services'])
+
+
+def test_required_sip_teacher_stop_records_incomplete_exercise(client):
+    teacher,student=auth(client,'teacher'),auth(client,'student')
+    scenario=build(client,teacher,['clean'])[0]
+    payload={'title':'Остановка телефонии','mode':'dds','require_sip':True,'scenario_ids':[scenario['id']],'student_ids':[3]}
+    id=client.post('/api/lessons',headers=teacher,json=payload).json()['id']
+    client.post(f'/api/lessons/{id}/start',headers=teacher)
+    run=client.post(f'/api/lessons/{id}/next',headers=student).json()
+    assert client.post(f'/api/lessons/{id}/stop',headers=teacher).status_code==200
+    report=client.get(f'/api/runs/{run["run_id"]}',headers=student).json()['report']
+    assert report['dds']['require_sip'] and report['dds']['missing_call_services']
+    assert report['parts']['Передача информации']==0

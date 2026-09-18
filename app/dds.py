@@ -104,6 +104,16 @@ def teacher_sources(s,u,categories):
     return rows
 
 
+def confirmed_sip(s,run,item):
+    call=s.get(VoipCall,item.get('call_id')) if item.get('call_id') else None
+    prepared=next((e for e in events_for(s,run) if e.kind=='dds.call.prepared' and e.data.get('call_id')==item.get('call_id')),None)
+    return bool(call and call.run_id==run.id and call.answered_at and call.ended_at and call.state in ('ended','cancelled') and prepared and prepared.data.get('service')==item.get('service'))
+
+def pending_sip_services(s,run,context):
+    gold=context.scenario_snapshot['expected']['dds_gold']
+    delivered={e.data['service'] for e in events_for(s,run) if e.kind=='dds.handoff' and e.data.get('outcome')=='accepted' and confirmed_sip(s,run,e.data) and normalize(gold['address']) in normalize(e.data.get('message',''))}
+    return sorted(set(gold['services'])-delivered)
+
 def evaluate_dds(s,run,context,elapsed):
     snapshot=context.scenario_snapshot
     gold=snapshot['expected']['dds_gold'];original=snapshot['dds_original']
@@ -124,7 +134,7 @@ def evaluate_dds(s,run,context,elapsed):
     delivered=set()
     for item in handoffs:
         call=calls.get(item.get('call_id'))
-        connected=not item.get('call_id') or bool(call and call.answered_at)
+        connected=confirmed_sip(s,run,item) if snapshot.get('require_sip') else (not item.get('call_id') or bool(call and call.answered_at))
         if item['outcome']=='accepted' and connected and normalize(gold['address']) in normalize(item['message']):delivered.add(item['service'])
     required=set(gold['services'])
     transmitted=required&delivered
@@ -138,6 +148,8 @@ def evaluate_dds(s,run,context,elapsed):
     if not corrections:errors.append('Проверка карточки не сохранена')
     elif not verdict_ok:errors.append('Вывод о корректности исходной карточки не совпадает с эталоном')
     errors += ['Не исправлено или изменено ошибочно: '+LABELS[key] for key in differences]
+    missing_calls=sorted(required-{e.data.get('service') for e in events_for(s,run) if e.kind=='dds.call.prepared' and confirmed_sip(s,run,e.data)}) if snapshot.get('require_sip') else []
+    if missing_calls:errors.append('Нет подтверждённого завершённого SIP-звонка службам: '+', '.join(missing_calls))
     if required-delivered:errors.append('Не подтверждена передача точного адреса службам: '+', '.join(sorted(required-delivered)))
     if delivered-required:errors.append('Информация передана лишним службам: '+', '.join(sorted(delivered-required)))
     if elapsed>norm:errors.append('Превышен норматив обработки')
@@ -145,7 +157,7 @@ def evaluate_dds(s,run,context,elapsed):
     grammar=check_grammar(card.get('description','')+'\n'+validation.get('comment',''))
     return {'score':sum(parts.values()),'parts':parts,'parts_max':{'Проверка карточки':10,'Данные и опечатки':35,'Службы реагирования':20,'Передача информации':25,'Время обработки':10},
             'elapsed_seconds':elapsed,'norm_seconds':norm,'time_deviation_seconds':elapsed-norm,'errors':errors,'grammar':grammar,
-            'dds':{'variant':snapshot['expected'].get('dds_variant'),'verdict':verdict,'findings':validation.get('findings',''),'comment':validation.get('comment',''),
+            'dds':{'require_sip':bool(snapshot.get('require_sip')), 'missing_call_services':missing_calls, 'pending_sip_services':pending_sip_services(s,run,context) if snapshot.get('require_sip') else [],'variant':snapshot['expected'].get('dds_variant'),'verdict':verdict,'findings':validation.get('findings',''),'comment':validation.get('comment',''),
                    'field_results':field_results,'required_services':sorted(required),'delivered_services':sorted(delivered),'handoffs':handoffs,'validation_count':len(corrections)},
             'note':'Учебная оценка ДДС: проверка исходной карточки, исправления, службы, подтверждённая передача адреса и время. Запись разговора оценивается преподавателем; автоматического распознавания речи нет.'}
 
@@ -264,6 +276,7 @@ def register_dds(app,db,current):
         if not any(e.kind=='dds.validation' for e in events_for(s,run)):raise HTTPException(409,'Сначала сохраните проверку карточки')
         if x.service not in run.answers['services']:raise HTTPException(422,'Служба отсутствует в проверенном списке оповещения')
         if not x.receiver.strip() or not x.message.strip():raise HTTPException(422,'Укажите получателя и переданную информацию')
+        if context.scenario_snapshot.get('require_sip') and not x.call_id:raise HTTPException(409,'В этом занятии обязателен SIP-звонок; текстовая симуляция не заменяет вызов')
         transport='Текстовая симуляция'
         if x.call_id:
             call=s.get(VoipCall,x.call_id)

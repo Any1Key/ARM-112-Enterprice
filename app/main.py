@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, String, Integer, DateTime, ForeignKey, Text, JSON, select, update
+from sqlalchemy import inspect, text, create_engine, String, Integer, DateTime, ForeignKey, Text, JSON, select, update
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
 from passlib.context import CryptContext
 
@@ -123,6 +123,9 @@ app.mount('/static',StaticFiles(directory='app/static'),name='static'); template
 @app.on_event('startup')
 def startup():
     Path('data/runtime').mkdir(parents=True,exist_ok=True); Base.metadata.create_all(engine)
+    if 'require_sip' not in {c['name'] for c in inspect(engine).get_columns('lessons')}:
+        with engine.begin() as connection:
+            connection.execute(text('ALTER TABLE lessons ADD COLUMN require_sip BOOLEAN NOT NULL DEFAULT FALSE'))
     with SessionLocal() as s:
         import_classifier(s); import_materials(s); seed(s)
         from app.bundled_scenarios import install_practice_catalog
@@ -348,7 +351,7 @@ def export_reports(u=Depends(current),s:Session=Depends(db),started_from:datetim
     from fastapi.responses import Response
     buffer=io.StringIO()
     writer=csv.writer(buffer,delimiter=';')
-    writer.writerow(['Сессия','Сценарий','Обучающийся','Начало','Завершение','Первичная оценка','Экспертная оценка','Время обработки, сек','Время реакции, сек','Норматив, сек','Отклонение, сек','Ошибки','Комментарий преподавателя','Режим','Регистрация','Канал','Время после регистрации, сек','Пропуски','Тип студента','Тип эталона','Адрес студента','Адрес эталона','Заявитель','АОН','Обратный номер','Пострадавшие','Службы студента','Не выбранные службы','Описание студента','Комментарий студента','Вывод ДДС','Замечания ДДС','Передано службам ДДС','Способы передачи ДДС'])
+    writer.writerow(['Сессия','Сценарий','Обучающийся','Начало','Завершение','Первичная оценка','Экспертная оценка','Время обработки, сек','Время реакции, сек','Норматив, сек','Отклонение, сек','Ошибки','Комментарий преподавателя','Режим','Регистрация','Канал','Время после регистрации, сек','Пропуски','Тип студента','Тип эталона','Адрес студента','Адрес эталона','Заявитель','АОН','Обратный номер','Пострадавшие','Службы студента','Не выбранные службы','Описание студента','Комментарий студента','Вывод ДДС','Замечания ДДС','Передано службам ДДС','Способы передачи ДДС','Учёт SIP-звонков ДДС','Службы без завершённого звонка ДДС','Службы без успешной SIP-передачи ДДС'])
     rows=reports(u,s,started_from,started_before,student_id)
     def cell(value):
         value=str(value) if value is not None else ''
@@ -361,7 +364,7 @@ def export_reports(u=Depends(current),s:Session=Depends(db),started_from:datetim
         from app.workflows import events_for,postprocessing_seconds
         events=events_for(s,run)
         writer.writerow([cell(value) for value in [row['id'],row['scenario_title'],row['student_name'],row['started_at'],row['finished_at'],row['score'],review.get('score'),report.get('elapsed_seconds'),report.get('reaction_seconds'),report.get('norm_seconds'),report.get('time_deviation_seconds'),'; '.join(report.get('errors',[])),review.get('comment'),
-            'ДДС' if snapshot.get('mode') in ('dispatch','dds') else '112',context.registered_at if context else None,card.get('channel'),postprocessing_seconds(run,context,events),sum(e.kind=='card.skip' for e in events),card.get('incident_type'),expected.get('incident_type'),card.get('address'),expected.get('address'),card.get('caller_name'),card.get('aon'),card.get('caller_phone'),card.get('victims_count'),', '.join(card.get('services',[])),', '.join(sorted(set(expected.get('services',[]))-set(card.get('services',[])))) if expected else '',card.get('description'),card.get('operator_comment'),(report.get('dds') or {}).get('verdict'),(report.get('dds') or {}).get('findings'),', '.join((report.get('dds') or {}).get('delivered_services',[])),', '.join(sorted({h.get('transport','') for h in (report.get('dds') or {}).get('handoffs',[])}))]])
+            'ДДС' if snapshot.get('mode') in ('dispatch','dds') else '112',context.registered_at if context else None,card.get('channel'),postprocessing_seconds(run,context,events),sum(e.kind=='card.skip' for e in events),card.get('incident_type'),expected.get('incident_type'),card.get('address'),expected.get('address'),card.get('caller_name'),card.get('aon'),card.get('caller_phone'),card.get('victims_count'),', '.join(card.get('services',[])),', '.join(sorted(set(expected.get('services',[]))-set(card.get('services',[])))) if expected else '',card.get('description'),card.get('operator_comment'),(report.get('dds') or {}).get('verdict'),(report.get('dds') or {}).get('findings'),', '.join((report.get('dds') or {}).get('delivered_services',[])),', '.join(sorted({h.get('transport','') for h in (report.get('dds') or {}).get('handoffs',[])})),('Да' if snapshot.get('require_sip') else 'Нет') if snapshot.get('mode')=='dds' else '',', '.join((report.get('dds') or {}).get('missing_call_services',[])),', '.join((report.get('dds') or {}).get('pending_sip_services',[]))]])
     audit(s,u,'report.export',{'count':len(rows),'started_from':started_from.isoformat() if started_from else None,'started_before':started_before.isoformat() if started_before else None,'student_id':student_id})
     return Response(('\ufeff'+buffer.getvalue()).encode('utf-8'),media_type='text/csv; charset=utf-8',headers={'Content-Disposition':'attachment; filename="arm112-results.csv"'})
 

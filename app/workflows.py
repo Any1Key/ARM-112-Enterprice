@@ -239,6 +239,7 @@ def run_payload(s,run,context):
             'status':'Пропущена' if (run.report or {}).get('skipped') else indicator,'service_history':history,
             'available_statuses':{code:available_statuses(records[-1]['status'],code) for code,records in history.items()},
             'events':[{'id':e.id,'at':aware(e.at),'kind':e.kind,'data':e.data,'user_id':e.user_id} for e in events],
+            'require_sip':bool(snapshot.get('require_sip',False)),
             'dds_original':snapshot.get('dds_original') if snapshot.get('mode')=='dds' else None,
             'dds_reference':snapshot.get('caller_text','') if snapshot.get('mode')=='dds' else None,
             'parent_run_id':snapshot.get('parent_run_id'),'sms_unread':unread,'reminder':snapshot.get('reminder'),'report':run.report}
@@ -306,7 +307,7 @@ def begin_run(s,u,scenario,lesson=None):
     settings=settings_for(s,scenario)
     snapshot={'title':scenario.title,'category':scenario.category,'caller_text':scenario.caller_text,
               'expected':scenario.expected,'mode':lesson.mode if lesson else (settings.mode if settings else 'call'),
-              'service_code':lesson.service_code if lesson else '112'}
+              'service_code':lesson.service_code if lesson else '112','require_sip':bool(lesson and lesson.require_sip)}
     run=SessionRun(scenario_id=scenario.id,student_id=u.id)
     s.add(run);s.flush()
     context=RunContext(run_id=run.id,lesson_id=lesson.id if lesson else None,scenario_snapshot=snapshot)
@@ -540,6 +541,7 @@ def register_routes(app,db,current,evaluate,pwd):
         return [{'id':x.id,'username':x.username} for x in s.scalars(select(User).where(User.role=='student'))]
 
     def validate_lesson(x,u,s):
+        if x.require_sip and x.mode!='dds':raise HTTPException(422,'Обязательный SIP-звонок доступен только для проверки ДДС')
         x.title=x.title.strip()
         if not x.title:raise HTTPException(422,'Введите название занятия')
         x.scenario_ids=list(dict.fromkeys(x.scenario_ids));x.student_ids=list(dict.fromkeys(x.student_ids))
@@ -576,7 +578,7 @@ def register_routes(app,db,current,evaluate,pwd):
     @app.get('/api/lesson-templates')
     def lesson_templates(u=Depends(current),s=Depends(db)):
         assert_teacher(u)
-        return [{'id':x.id,'title':x.title,'status':x.status,'mode':x.mode,'scenario_ids':x.scenario_ids,'student_ids':x.student_ids,'service_code':x.service_code}
+        return [{'id':x.id,'title':x.title,'status':x.status,'mode':x.mode,'scenario_ids':x.scenario_ids,'student_ids':x.student_ids,'service_code':x.service_code,'require_sip':x.require_sip}
                 for x in s.scalars(select(Lesson).where(Lesson.teacher_id==u.id,Lesson.status=='template').order_by(Lesson.id.desc()))]
 
     @app.post('/api/lesson-templates')
@@ -601,7 +603,7 @@ def register_routes(app,db,current,evaluate,pwd):
         template=s.get(Lesson,template_id)
         if not template or template.status!='template':raise HTTPException(404,'Заготовка не найдена')
         if template.teacher_id!=u.id:raise HTTPException(403)
-        payload=LessonIn(title=x.title or template.title,mode=template.mode,scenario_ids=list(template.scenario_ids),student_ids=x.student_ids,service_code=template.service_code)
+        payload=LessonIn(title=x.title or template.title,mode=template.mode,scenario_ids=list(template.scenario_ids),student_ids=x.student_ids,service_code=template.service_code,require_sip=template.require_sip)
         validate_lesson(payload,u,s)
         lesson=Lesson(**payload.model_dump(),teacher_id=u.id);s.add(lesson);s.flush()
         log(s,u,'lesson.template.assign',{'template_id':template.id,'lesson_id':lesson.id});s.commit();return {'id':lesson.id}
@@ -615,7 +617,7 @@ def register_routes(app,db,current,evaluate,pwd):
             if u.role=='student' and u.id not in lesson.student_ids: continue
             rows.append({'id':lesson.id,'title':lesson.title,'status':lesson.status,'mode':lesson.mode,
                          'scenario_ids':lesson.scenario_ids,'student_ids':lesson.student_ids if u.role!='student' else [u.id],
-                         'service_code':lesson.service_code,**(lesson_progress(s,lesson,u.id) if u.role=='student' else {})})
+                         'service_code':lesson.service_code,'require_sip':lesson.require_sip,**(lesson_progress(s,lesson,u.id) if u.role=='student' else {})})
         return rows
 
     @app.post('/api/lessons/{lesson_id}/tasks/{scenario_id}/start')

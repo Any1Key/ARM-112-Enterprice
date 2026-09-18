@@ -76,6 +76,7 @@ class Lesson(Base):
     teacher_id:Mapped[int]=mapped_column(ForeignKey('users.id'),index=True)
     status:Mapped[str]=mapped_column(default='prepared')
     mode:Mapped[str]=mapped_column(default='call')
+    require_sip:Mapped[bool]=mapped_column(default=False,server_default='false')
     scenario_ids:Mapped[list]=mapped_column(JSON)
     student_ids:Mapped[list]=mapped_column(JSON)
     service_code:Mapped[str]

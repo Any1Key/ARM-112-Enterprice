@@ -67,6 +67,7 @@ class SettingsIn(BaseModel):
     published: bool = False
 
 class LessonIn(BaseModel):
+    require_sip: bool = False
     title: str = Field(min_length=1,max_length=300)
     mode: Literal['call','dispatch','dds'] = 'call'
     scenario_ids: list[int] = Field(min_length=1,max_length=100)
