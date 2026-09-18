@@ -62,13 +62,13 @@ class ResolveIn(BaseModel):
 class SettingsIn(BaseModel):
     generation_job_id:int|None=None
     difficulty: Literal['basic','advanced','complex'] = 'basic'
-    mode: Literal['call','dispatch'] = 'call'
+    mode: Literal['call','dispatch','dds'] = 'call'
     initial_card: CardIn = Field(default_factory=CardIn)
     published: bool = False
 
 class LessonIn(BaseModel):
     title: str = Field(min_length=1,max_length=300)
-    mode: Literal['call','dispatch'] = 'call'
+    mode: Literal['call','dispatch','dds'] = 'call'
     scenario_ids: list[int] = Field(min_length=1,max_length=100)
     student_ids: list[int] = Field(min_length=1,max_length=100)
     service_code: str = Field(default='TERRITORY',min_length=1,max_length=100)

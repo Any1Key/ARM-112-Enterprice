@@ -240,7 +240,7 @@ def scenarios(u=Depends(current),s:Session=Depends(db)):
                        'published':setting.published if setting else True,
                        'difficulty':setting.difficulty if setting else 'basic','mode':setting.mode if setting else 'call',
                        'initial_card':setting.initial_card if setting and u.role!='student' else None,
-                       'source':setting.source if setting else {}})
+                       'source':setting.source if setting and u.role!='student' else {}})
     return result
 @app.post('/api/scenarios')
 def create_scenario(x:ScenarioIn,u=Depends(current),s:Session=Depends(db)):
@@ -261,6 +261,8 @@ def edit_scenario(scenario_id:int,x:ScenarioIn,u=Depends(current),s:Session=Depe
     q=s.get(Scenario,scenario_id)
     if not q: raise HTTPException(404)
     assert_editable(s,u,q)
+    setting=s.get(ScenarioSettings,q.id)
+    if setting and setting.mode=='dds':raise HTTPException(422,'Редактируйте исходную карточку и эталон через кабинет ДДС')
     q.title=x.title.strip();q.category=x.category.strip();q.caller_text=x.caller_text.strip();q.expected=x.expected.model_dump()
     setting=s.get(ScenarioSettings,q.id)
     if not setting: setting=ScenarioSettings(scenario_id=q.id);s.add(setting)
@@ -283,7 +285,7 @@ def start_run(scenario_id:int,u=Depends(current),s:Session=Depends(db)):
         from app.workflows import run_payload
         return run_payload(s,active,context)
     setting=s.get(ScenarioSettings,scenario_id)
-    if setting and setting.mode=='dispatch': raise HTTPException(409,'Задание ДДС запускается преподавателем через занятие')
+    if setting and setting.mode in ('dispatch','dds'): raise HTTPException(409,'Задание ДДС запускается преподавателем через занятие')
     matching=[item for item in s.scalars(select(Lesson).where(Lesson.status=='active').order_by(Lesson.id.desc())) if u.id in item.student_ids and sc.id in item.scenario_ids]
     lesson=None
     for item in matching:
@@ -346,7 +348,7 @@ def export_reports(u=Depends(current),s:Session=Depends(db),started_from:datetim
     from fastapi.responses import Response
     buffer=io.StringIO()
     writer=csv.writer(buffer,delimiter=';')
-    writer.writerow(['Сессия','Сценарий','Обучающийся','Начало','Завершение','Первичная оценка','Экспертная оценка','Время обработки, сек','Время реакции, сек','Норматив, сек','Отклонение, сек','Ошибки','Комментарий преподавателя','Режим','Регистрация','Канал','Время после регистрации, сек','Пропуски','Тип студента','Тип эталона','Адрес студента','Адрес эталона','Заявитель','АОН','Обратный номер','Пострадавшие','Службы студента','Не выбранные службы','Описание студента','Комментарий студента'])
+    writer.writerow(['Сессия','Сценарий','Обучающийся','Начало','Завершение','Первичная оценка','Экспертная оценка','Время обработки, сек','Время реакции, сек','Норматив, сек','Отклонение, сек','Ошибки','Комментарий преподавателя','Режим','Регистрация','Канал','Время после регистрации, сек','Пропуски','Тип студента','Тип эталона','Адрес студента','Адрес эталона','Заявитель','АОН','Обратный номер','Пострадавшие','Службы студента','Не выбранные службы','Описание студента','Комментарий студента','Вывод ДДС','Замечания ДДС','Передано службам ДДС','Способы передачи ДДС'])
     rows=reports(u,s,started_from,started_before,student_id)
     def cell(value):
         value=str(value) if value is not None else ''
@@ -359,7 +361,7 @@ def export_reports(u=Depends(current),s:Session=Depends(db),started_from:datetim
         from app.workflows import events_for,postprocessing_seconds
         events=events_for(s,run)
         writer.writerow([cell(value) for value in [row['id'],row['scenario_title'],row['student_name'],row['started_at'],row['finished_at'],row['score'],review.get('score'),report.get('elapsed_seconds'),report.get('reaction_seconds'),report.get('norm_seconds'),report.get('time_deviation_seconds'),'; '.join(report.get('errors',[])),review.get('comment'),
-            'ДДС' if snapshot.get('mode')=='dispatch' else '112',context.registered_at if context else None,card.get('channel'),postprocessing_seconds(run,context,events),sum(e.kind=='card.skip' for e in events),card.get('incident_type'),expected.get('incident_type'),card.get('address'),expected.get('address'),card.get('caller_name'),card.get('aon'),card.get('caller_phone'),card.get('victims_count'),', '.join(card.get('services',[])),', '.join(sorted(set(expected.get('services',[]))-set(card.get('services',[])))) if expected else '',card.get('description'),card.get('operator_comment')]])
+            'ДДС' if snapshot.get('mode') in ('dispatch','dds') else '112',context.registered_at if context else None,card.get('channel'),postprocessing_seconds(run,context,events),sum(e.kind=='card.skip' for e in events),card.get('incident_type'),expected.get('incident_type'),card.get('address'),expected.get('address'),card.get('caller_name'),card.get('aon'),card.get('caller_phone'),card.get('victims_count'),', '.join(card.get('services',[])),', '.join(sorted(set(expected.get('services',[]))-set(card.get('services',[])))) if expected else '',card.get('description'),card.get('operator_comment'),(report.get('dds') or {}).get('verdict'),(report.get('dds') or {}).get('findings'),', '.join((report.get('dds') or {}).get('delivered_services',[])),', '.join(sorted({h.get('transport','') for h in (report.get('dds') or {}).get('handoffs',[])}))]])
     audit(s,u,'report.export',{'count':len(rows),'started_from':started_from.isoformat() if started_from else None,'started_before':started_before.isoformat() if started_before else None,'student_id':student_id})
     return Response(('\ufeff'+buffer.getvalue()).encode('utf-8'),media_type='text/csv; charset=utf-8',headers={'Content-Disposition':'attachment; filename="arm112-results.csv"'})
 
@@ -380,3 +382,9 @@ register_report_details(app,db,current)
 from app.restoration import register_restoration
 from app.operations import backup_catalog
 register_restoration(app,db,current,SessionLocal,engine,pwd.verify,backup_catalog)
+
+from app.dds import register_dds
+register_dds(app,db,current)
+
+from app.dds_telephony import register_dds_telephony
+register_dds_telephony(app,db,current,SessionLocal)

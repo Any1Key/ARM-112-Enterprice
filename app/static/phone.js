@@ -20,7 +20,7 @@ async function lockBrowserPhone(username){
 const preparedAudio=new Map();
 function warmSelectedAudio(){
   const scenario=state.selected;
-  if(!state.token||state.role!=='student'||!sipUA?.isRegistered()||!scenario||scenario.mode==='dispatch')return;
+  if(!state.token||state.role!=='student'||!sipUA?.isRegistered()||!scenario||['dispatch','dds'].includes(scenario.mode))return;
   const key=scenario.id+':'+scenario.caller_text;
   if(preparedAudio.has(key))return;
   const pending=api(`/api/telephony/scenarios/${scenario.id}/prepare`,{method:'POST'}).catch(()=>preparedAudio.delete(key));
@@ -59,7 +59,7 @@ async function startTrainingCall(){
   if(sipStarting||(sipSession&&!sipSession.isEnded()))throw Error('Звонок уже готовится или идёт');
   if(!sipUA?.isRegistered())throw Error('Подключите телефон');
   if(!state.selected)throw Error('Выберите сценарий занятия');
-  if(state.selected.mode==='dispatch')throw Error('В ДДС используется входящая карточка');
+  if(['dispatch','dds'].includes(state.selected.mode))throw Error('В ДДС используется входящая карточка');
   const attempt=++sipAttempt;sipStarting=true;sipCallId=null;startPhone.disabled=true;phoneStatus.textContent='Подготовка вызова';
   try{
     const run=state.runId?await api(`/api/runs/${state.runId}`):await api(`/api/runs/${state.selected.id}/start`,{method:'POST'});

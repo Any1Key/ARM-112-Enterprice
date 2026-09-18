@@ -197,7 +197,7 @@ def register_telephony(app,db,current,session_factory):
         run,context=get_run(s,u,run_id,True)
         if u.role!='student' or run.student_id!=u.id:raise HTTPException(403)
         ensure_writable(run,context,s)
-        if context and context.scenario_snapshot.get('mode')=='dispatch':raise HTTPException(409,'ДДС получает карточки; голосовой вызов относится к режиму 112')
+        if context and context.scenario_snapshot.get('mode') in ('dispatch','dds'):raise HTTPException(409,'ДДС получает карточки; голосовой вызов относится к режиму 112')
         existing=s.scalar(select(VoipCall).where(VoipCall.run_id==run.id,VoipCall.state.in_(['queued','ringing','answered'])))
         if existing:return {'call_id':existing.id,'state':existing.state}
         account=s.get(SipAccount,u.id)
@@ -221,7 +221,7 @@ def register_telephony(app,db,current,session_factory):
         if not scenario:raise HTTPException(404)
         check_scenario_access(s,u,scenario)
         settings=settings_for(s,scenario)
-        if settings and settings.mode=='dispatch':raise HTTPException(422,'Озвучка относится к карточке 112')
+        if settings and settings.mode in ('dispatch','dds'):raise HTTPException(422,'Озвучка относится к карточке 112')
         text=scenario.caller_text;name=scenario.expected.get('caller_name','')
         s.rollback() # Do not hold a database connection during synthesis.
         started=time.monotonic()
@@ -306,6 +306,13 @@ def recover_interrupted_calls(s):
         if call.channel:
             try:ami_action('Hangup',Channel=call.channel)
             except (OSError,ConnectionError):pass
+        prepared=s.scalar(select(CardEvent).where(CardEvent.run_id==call.run_id,CardEvent.kind=='dds.call.prepared').order_by(CardEvent.id.desc()))
+        if prepared and prepared.data.get('call_id')==call.id:
+            student=s.get(SessionRun,call.run_id).student_id
+            extension=prepared.data.get('extension','')
+            if extension.isdigit():
+                try:ami_action('Command',Command=f'database del dds {student}/{extension}')
+                except (OSError,ConnectionError):pass
         call.state='failed';call.error='Вызов прерван перезапуском сервиса';call.ended_at=datetime.now(timezone.utc)
         s.add(Audit(action='sip.recovered',details={'call_id':call.id,'run_id':call.run_id}))
     s.commit()

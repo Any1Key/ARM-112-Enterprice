@@ -9,6 +9,7 @@ from services.voice import selection
 
 
 def test_simultaneous_identical_voice_requests_share_one_synthesis(monkeypatch,tmp_path):
+    monkeypatch.syspath_prepend(str(Path('services/voice').resolve()))
     monkeypatch.setitem(sys.modules,'selection',selection)
     monkeypatch.setitem(sys.modules,'piper',types.SimpleNamespace(PiperVoice=types.SimpleNamespace(load=lambda p:None)))
     spec=importlib.util.spec_from_file_location('isolated_voice_server',Path('services/voice/server.py'))

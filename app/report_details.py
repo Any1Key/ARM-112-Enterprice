@@ -44,6 +44,7 @@ def register_report_details(app,db,current):
                 'recording_available':bool(files and not any(c.state in ('queued','ringing','answered') for c in calls))}
         # Active students can see their own evidence, but never the scenario answer key.
         if u.role in ('teacher','admin'):
+            if snapshot.get('mode')=='dds':result['dds_reference_card']=expected.get('dds_gold')
             card=run.answers or {}
             comparisons=[]
             for field,label in FIELDS:

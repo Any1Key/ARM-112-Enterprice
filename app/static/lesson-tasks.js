@@ -7,7 +7,7 @@ function lessonTaskPanel(lesson,location){
  const panel=el('article','panel lesson-progress');panel.dataset.lessonId=lesson.id;
  const counts=lesson.counts||{total:lesson.scenario_ids.length,completed:0,skipped:0,in_progress:0,pending:lesson.scenario_ids.length};
  const heading=el('div','lesson-progress-heading');const copy=el('div');
- copy.append(el('b','',lesson.title),el('p','source-meta',`${lesson.mode==='dispatch'?'ДДС · служба '+lesson.service_code:'Карточки 112'} · ${({prepared:'Ожидает начала',active:'Занятие идёт',finished:'Занятие завершено'})[lesson.status]}`));
+ copy.append(el('b','',lesson.title),el('p','source-meta',`${lesson.mode==='dds'?'ДДС · проверка карточек':lesson.mode==='dispatch'?'ДДС · служба '+lesson.service_code:'Карточки 112'} · ${({prepared:'Ожидает начала',active:'Занятие идёт',finished:'Занятие завершено'})[lesson.status]}`));
  const next=el('button','primary',lesson.all_completed?'Все задания выполнены':counts.in_progress?'Продолжить карточку →':!counts.pending&&counts.skipped?'Вернуться к пропущенному →':'Следующая карточка →');next.type='button';
  next.disabled=lesson.status!=='active'||lesson.all_completed||lessonTaskLoading||Boolean(state.runId&&state.lessonId!==lesson.id);
  next.addEventListener('click',guarded(()=>nextLesson(lesson.id)));heading.append(copy,next);panel.append(heading);

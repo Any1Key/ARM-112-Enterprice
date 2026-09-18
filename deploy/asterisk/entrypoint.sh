@@ -9,7 +9,7 @@ port=5038
 bindaddr=0.0.0.0
 [arm112]
 secret=${ASTERISK_AMI_SECRET:?AMI secret required}
-read=system,call,reporting
+read=system,call,reporting,user
 write=system,call,originate,command
 CONF
 # Docker bridge addresses are local; LAN phones need the host RTP address.

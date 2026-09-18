@@ -86,7 +86,7 @@ def register_extensions(app,db,current):
     def lock(run_id:int,u=Depends(current),s=Depends(db)):
         run,context=get_run(s,u,run_id,True);ensure_writable(run,context,s)
         if not context or not context.registered_at:raise HTTPException(409,'Сначала сохраните карточку')
-        if context.scenario_snapshot.get('mode')=='dispatch':raise HTTPException(403,'Исходную карточку дополняет оператор 112')
+        if context.scenario_snapshot.get('mode') in ('dispatch','dds'):raise HTTPException(403,'Исходную карточку дополняет оператор 112')
         previous=context.scenario_snapshot.get('edit_lock',{})
         if previous and datetime.fromisoformat(previous['until'])>now():raise HTTPException(409,'Карточка уже дополняется в другой вкладке')
         token=secrets.token_hex(24);snapshot_update(context,edit_lock={'user_id':u.id,'token':token,'until':(now()+timedelta(minutes=5)).isoformat()})
