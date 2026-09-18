@@ -25,6 +25,10 @@ def register_report_details(app,db,current):
         events=list(s.scalars(select(CardEvent).where(CardEvent.run_id==run.id).order_by(CardEvent.at,CardEvent.id)))
         names={x.id:x.username for x in s.scalars(select(User).where(User.id.in_({e.user_id for e in events if e.user_id}))) }
         calls=list(s.scalars(select(VoipCall).where(VoipCall.run_id==run.id).order_by(VoipCall.id)))
+        prepared={e.data.get('call_id'):e.data for e in events if e.kind=='dds.call.prepared'}
+        from app.dds import directory
+        service_names=directory(s) if prepared else {}
+        handoffs={c.id:[e.data for e in events if e.kind=='dds.handoff' and e.data.get('call_id')==c.id] for c in calls}
         audio={e.data.get('call_id'):e.data for e in events if e.kind=='sip.audio_ready'}
         files=recording_files(s,run.id,calls)
         result={**payload,'id':run.id,'student_name':student.username if student else 'Удалённый пользователь',
@@ -36,7 +40,9 @@ def register_report_details(app,db,current):
                            'reaction_seconds':(run.report or {}).get('reaction_seconds'),
                            'skip_count':sum(e.kind=='card.skip' for e in events),
                            'resume_count':sum(e.kind=='card.resume' for e in events)},
-                'calls':[{'id':c.id,'state':c.state,'created_at':aware(c.created_at),'answered_at':aware(c.answered_at),
+                'calls':[{'id':c.id,'direction':'outbound' if c.id in prepared else 'inbound',
+                          'service':prepared.get(c.id,{}).get('service'), 'service_name':prepared.get(c.id,{}).get('name') or service_names.get(prepared.get(c.id,{}).get('service')),
+                          'extension':prepared.get(c.id,{}).get('extension'), 'handoffs':handoffs[c.id], 'state':c.state,'created_at':aware(c.created_at),'answered_at':aware(c.answered_at),
                           'ended_at':aware(c.ended_at),'error':c.error,'audio':audio.get(c.id),
                           'waiting_seconds':max(0,round((c.answered_at-c.created_at).total_seconds(),2)) if c.answered_at else None,
                           'conversation_seconds':max(0,round((aware(c.ended_at)-aware(c.answered_at)).total_seconds(),2)) if c.answered_at and c.ended_at else None,

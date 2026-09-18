@@ -13,6 +13,7 @@ def recording_files(s,run_id,calls=None):
         path=root/f'recording-{run_id}-{call.id}.wav'
         if path.is_file():result[call.id]=path
     modern={e.data.get('call_id') for e in s.scalars(select(CardEvent).where(CardEvent.run_id==run_id,CardEvent.kind=='sip.queued')) if e.data.get('recording_per_call')}
+    modern.update(e.data.get('call_id') for e in s.scalars(select(CardEvent).where(CardEvent.run_id==run_id,CardEvent.kind=='dds.call.prepared')))
     legacy=[c for c in calls if c.answered_at and c.id not in modern]
     old=root/f'recording-{run_id}.wav'
     if legacy and old.is_file():result.setdefault(max(legacy,key=lambda c:c.id).id,old)

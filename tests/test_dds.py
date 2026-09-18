@@ -248,3 +248,26 @@ def test_required_sip_teacher_stop_records_incomplete_exercise(client):
     report=client.get(f'/api/runs/{run["run_id"]}',headers=student).json()['report']
     assert report['dds']['require_sip'] and report['dds']['missing_call_services']
     assert report['parts']['Передача информации']==0
+
+
+def test_dds_report_calls_show_service_recipient_recording_and_do_not_reuse_112_audio(client,monkeypatch,tmp_path):
+    from app.main import SessionLocal
+    from app.workflows import now
+    teacher,student=auth(client,'teacher'),auth(client,'student')
+    scenario=build(client,teacher,['clean'])[0];_,run=lesson(client,teacher,student,[scenario]);id=run['run_id']
+    monkeypatch.setenv('CALL_MEDIA_ROOT',str(tmp_path))
+    service=scenario['expected']['dds_gold']['services'][0]
+    with SessionLocal() as s:
+        call=VoipCall(run_id=id,state='ended',sound_key='a'*64,answered_at=now(),ended_at=now());s.add(call);s.flush();call_id=call.id
+        s.add(CardEvent(run_id=id,user_id=3,kind='dds.call.prepared',data={'call_id':call_id,'service':service,'name':'Учебная служба','extension':'80888'}))
+        s.add(CardEvent(run_id=id,user_id=3,kind='dds.handoff',data={'call_id':call_id,'service':service,'receiver':'Дежурный Иванов','message':'Передан адрес','outcome':'accepted','transport':'SIP'}));s.commit()
+    (tmp_path/f'recording-{id}.wav').write_bytes(b'old 112 recording')
+    evidence=client.get(f'/api/reports/{id}',headers=teacher).json()['calls'][0]
+    assert evidence['direction']=='outbound' and evidence['service']==service
+    assert evidence['service_name']=='Учебная служба' and evidence['extension']=='80888'
+    assert evidence['handoffs'][0]['receiver']=='Дежурный Иванов' and evidence['recording_available'] is False
+    (tmp_path/f'recording-{id}-{call_id}.wav').write_bytes(b'student and service recording')
+    evidence=client.get(f'/api/reports/{id}',headers=teacher).json()['calls'][0]
+    assert evidence['recording_available'] is True
+    response=client.get(f'/api/telephony/runs/{id}/recording?call_id={call_id}',headers=teacher)
+    assert response.status_code==200 and response.content==b'student and service recording'
