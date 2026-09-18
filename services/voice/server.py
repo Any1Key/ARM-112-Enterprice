@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from piper import PiperVoice
 from selection import choose_voice, DISABLED_VOICES
 from verified_phrases import correct_verified_phrases
+from russian_numbers import prepare_number_text
 app=FastAPI();root=Path('/media');root.mkdir(exist_ok=True)
 voice_models={}
 for model_path in sorted(Path('/models').glob('ru_RU-*-medium.onnx')):
@@ -26,7 +27,7 @@ def speech(data:Speech):
     voice_name=choose_voice(voice_models,data.caller_name,data.text,data.voice,stable_key=data.caller_name+"\0"+data.text)
     # Include the engine and voice revision so cached espeak files are never
     # reused after switching to neural Piper voices.
-    spoken=correct_verified_phrases(data.text)
+    spoken=prepare_number_text(correct_verified_phrases(data.text))
     key=hashlib.sha256((f'piper-{voice_name}-v1\\0'+spoken).encode()).hexdigest();target=root/(key+'.wav')
     with sound_locks_guard:
         sound_lock=sound_locks.get(key)
