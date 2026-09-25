@@ -8,6 +8,20 @@
 
 ## Получить и запустить
 
+Актуальный кабинет ДДС развивается в ветке `dds`. Для запуска версии со всеми описанными ниже функциями ДДС клонируйте именно её:
+
+```bash
+git clone --branch dds --single-branch https://github.com/yaro-s-lav/hacka.git
+cd hacka
+docker compose --profile voip --profile ai up -d --build
+docker compose --profile voip --profile ai ps
+curl http://localhost:8000/health
+```
+
+После запуска откройте `http://localhost:8000`. Пошаговая работа преподавателя и студента: [docs/DDS_TRAINING.md](docs/DDS_TRAINING.md). Подключение внешнего телефона: [docs/SIP_PHONE_SETUP.md](docs/SIP_PHONE_SETUP.md).
+
+Для эталонной ветки без разрабатываемого кабинета ДДС используется обычное клонирование:
+
 ```bash
 git clone https://github.com/yaro-s-lav/hacka.git
 cd hacka
