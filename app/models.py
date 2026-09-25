@@ -81,6 +81,7 @@ class Lesson(Base):
     student_ids:Mapped[list]=mapped_column(JSON)
     service_code:Mapped[str]
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
+    started_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True)
 class RunContext(Base):
     __tablename__='run_contexts'
     run_id:Mapped[int]=mapped_column(ForeignKey('session_runs.id'),primary_key=True)

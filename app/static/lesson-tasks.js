@@ -7,7 +7,7 @@ function lessonTaskPanel(lesson,location){
  const panel=el('article','panel lesson-progress');panel.dataset.lessonId=lesson.id;
  const counts=lesson.counts||{total:lesson.scenario_ids.length,completed:0,skipped:0,in_progress:0,pending:lesson.scenario_ids.length};
  const heading=el('div','lesson-progress-heading');const copy=el('div');
- copy.append(el('b','',lesson.title),el('p','source-meta',`${lesson.mode==='dds'?'ДДС · проверка карточек':lesson.mode==='dispatch'?'ДДС · служба '+lesson.service_code:'Карточки 112'} · ${({prepared:'Ожидает начала',active:'Занятие идёт',finished:'Занятие завершено'})[lesson.status]}`));
+ copy.append(el('b','',lesson.title),el('p','source-meta',`${lesson.mode==='dds'?'ДДС · служба '+lesson.service_code:lesson.mode==='dispatch'?'ДДС · служба '+lesson.service_code:'Карточки 112'} · ${({prepared:'Ожидает начала',active:'Занятие идёт',finished:'Занятие завершено'})[lesson.status]}`));
  const next=el('button','primary',lesson.all_completed?'Все задания выполнены':counts.in_progress?'Продолжить карточку →':!counts.pending&&counts.skipped?'Вернуться к пропущенному →':'Следующая карточка →');next.type='button';
  next.disabled=lesson.status!=='active'||lesson.all_completed||lessonTaskLoading||Boolean(state.runId&&state.lessonId!==lesson.id);
  next.addEventListener('click',guarded(()=>nextLesson(lesson.id)));heading.append(copy,next);panel.append(heading);
@@ -20,7 +20,8 @@ function lessonTaskPanel(lesson,location){
  for(const task of lesson.tasks||[]){
   const row=el('li','lesson-task-row');row.dataset.taskStatus=task.status;row.dataset.scenarioId=task.scenario_id;
   const title=el('div','lesson-task-copy');title.append(el('b','',task.title));
-  if(task.finished_at)title.append(el('small','source-meta',`${task.status==='skipped'?'Пропущено':'Завершено'} ${skipDate(task.finished_at)}${task.elapsed_seconds!=null?' · время '+duration(task.elapsed_seconds):''}${task.score!=null?' · '+task.score+'/100':''}`));
+  if(lesson.mode==='dds'&&lesson.status==='active'&&task.status!=='completed'&&task.elapsed_seconds!=null)title.append(el('small','source-meta',`Время с поступления: ${duration(task.elapsed_seconds)} · таймер идёт в очереди`));
+  else if(task.finished_at)title.append(el('small','source-meta',`${task.status==='skipped'?'Пропущено':'Завершено'} ${skipDate(task.finished_at)}${task.elapsed_seconds!=null?' · время '+duration(task.elapsed_seconds):''}${task.score!=null?' · '+task.score+'/100':''}`));
   const badge=el('span',`lesson-task-status ${task.status}`,lessonTaskLabels[task.status]);row.append(title,badge);
   const result=task.status==='completed'||(task.status==='skipped'&&lesson.status==='finished');
   const button=el('button','secondary',result?(task.status==='skipped'?'История':'Результат'):task.status==='skipped'?'Продолжить':task.status==='in_progress'?'Открыть':'Начать');button.type='button';

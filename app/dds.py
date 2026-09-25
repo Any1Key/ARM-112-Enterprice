@@ -12,15 +12,15 @@ from app.schemas import CardIn
 from app.classifier import SERVICE_NAMES
 from app.workflows import get_run, ensure_writable, assert_teacher, assert_editable, now, events_for, elapsed_seconds
 
-VARIANTS = {'clean':'Без внесённых ошибок','typos':'Опечатки','data':'Ошибки в данных','services':'Ошибки в службах','mixed':'Данные, службы и опечатки'}
+VARIANTS = {'clean':'Служба указана по назначению','services':'Карточка направлена не той службе'}
 FIELDS = ('incident_type','address','description','caller_name','caller_phone','aon','on_site_phone','victims_count','classifier_ids','services')
 LABELS = {'incident_type':'Тип происшествия','address':'Адрес','description':'Описание','caller_name':'Заявитель','caller_phone':'Обратный телефон','aon':'АОН','on_site_phone':'Телефон на месте','victims_count':'Пострадавшие','classifier_ids':'Классы ЕКП','services':'Службы'}
 
 class BuildIn(BaseModel):
-    title: str = Field(default='Проверка карточки ДДС',min_length=1,max_length=250)
+    title: str = Field(default='Реагирование службы ДДС',min_length=1,max_length=250)
     categories: list[str] = Field(default_factory=list,max_length=24)
     source: Literal['generated','students','mixed'] = 'generated'
-    variants: list[Literal['clean','typos','data','services','mixed']] = Field(default_factory=lambda:['clean','typos','data','services','mixed'],min_length=1,max_length=5)
+    variants: list[Literal['clean','typos','data','services','mixed']] = Field(default_factory=lambda:['clean','services'],min_length=1,max_length=5)
     count: int = Field(default=10,ge=1,le=100)
     norm_seconds: int = Field(default=180,ge=1,le=86400)
 
@@ -65,6 +65,7 @@ def changed_fields(before,after):
 def received_card(card,names):
     """Never auto-resolve: incorrect alert recipients must remain visible."""
     result=CardIn.model_validate(card).model_dump()
+    result['service_phones']={code:phone.strip() for code,phone in result['service_phones'].items() if code in result['services'] and phone.strip()}
     result['dispatch']=[{'code':code,'name':names.get(code,code),'visible':True,'origin':'Карточка 112','mappings':[]} for code in result['services']]
     return result
 
@@ -161,6 +162,37 @@ def evaluate_dds(s,run,context,elapsed):
                    'field_results':field_results,'required_services':sorted(required),'delivered_services':sorted(delivered),'handoffs':handoffs,'validation_count':len(corrections)},
             'note':'Учебная оценка ДДС: проверка исходной карточки, исправления, службы, подтверждённая передача адреса и время. Запись разговора оценивается преподавателем; автоматического распознавания речи нет.'}
 
+def evaluate_status_dds(s,run,context,elapsed):
+    """Assess only the receiving service's decisions and status history."""
+    from app.training import ACCEPTED, REJECTED, TERMINAL
+    from app.workflows import history_for, aware
+    snapshot=context.scenario_snapshot
+    service=snapshot['service_code']
+    records=history_for(events_for(s,run)).get(service,[])
+    actions=[item for item in records if item['status'] not in ('Добавлена','Получена службой')]
+    first=actions[0] if actions else None
+    expected=ACCEPTED if service in snapshot['expected']['dds_gold'].get('services',[]) else REJECTED
+    decision_ok=bool(first and first['status']==expected)
+    latest=actions[-1]['status'] if actions else None
+    complete=bool(latest==REJECTED if expected==REJECTED else latest in TERMINAL and latest!='Отказ от выполнения работ')
+    commented=bool(actions and all(item.get('comment','').strip() for item in actions))
+    norm=int(snapshot['expected'].get('norm_seconds',180))
+    reaction=max(0,int((datetime.fromisoformat(first['at'])-aware(context.registered_at)).total_seconds())) if first else elapsed
+    parts={'Решение своей службы':35 if decision_ok else 0,
+           'Статусы реагирования':25 if decision_ok and complete else 0,
+           'Комментарии к статусам':20 if commented else 0,
+           'Время первой реакции':20 if first and reaction<=norm else 0}
+    errors=[]
+    if not first:errors.append('Нет решения о приёме или отказе')
+    elif not decision_ok:errors.append('Решение службы не соответствует учебному сценарию')
+    if not complete:errors.append('Работа своей службы не доведена до завершающего статуса')
+    if not commented:errors.append('Не ко всем действиям добавлены комментарии')
+    if reaction>norm:errors.append('Превышен учебный норматив первой реакции')
+    return {'score':sum(parts.values()),'parts':parts,'parts_max':{'Решение своей службы':35,'Статусы реагирования':25,'Комментарии к статусам':20,'Время первой реакции':20},
+            'elapsed_seconds':elapsed,'reaction_seconds':reaction,'norm_seconds':norm,'time_deviation_seconds':reaction-norm,'errors':errors,
+            'dds':{'workflow':'status','service_code':service,'expected_decision':expected,'decision':first['status'] if first else None,'latest_status':latest,'status_history':actions},
+            'note':'Учебная оценка ДДС: решение своей службы, статусы, комментарии и время первой реакции. Контакты с заявителем и бригадой преподаватель оценивает по журналу действий; поля карточки 112 не проверяются.'}
+
 
 def register_dds(app,db,current):
     @app.get('/api/dds/catalog')
@@ -212,8 +244,10 @@ def register_dds(app,db,current):
                 initial=deepcopy(gold);caller_text=generated.caller_text;category=t.category
                 source={'kind':'dds','origin':'generated','classifier_code':t.code,'generation':provenance}
             variant=variants[index%len(variants)]
-            # Student-card mode preserves submitted errors. Clean explicitly uses the reference.
+            # New DDS lessons use the received card as read-only source. Only
+            # routing variants affect the service's accept/reject decision.
             if variant=='clean':initial=deepcopy(gold)
+            if variant in ('typos','data','mixed'):variant='clean'
             damaged=damage(initial,variant,names)
             title=f'{x.title.strip()} · {index+1}'
             scenario=Scenario(title=title,category=category,caller_text=caller_text,
@@ -253,6 +287,7 @@ def register_dds(app,db,current):
         if u.role!='student':raise HTTPException(403)
         run,context=get_run(s,u,run_id,True);ensure_writable(run,context,s)
         if not context or context.scenario_snapshot.get('mode')!='dds':raise HTTPException(422,'Не упражнение проверки ДДС')
+        if context.scenario_snapshot.get('dds_workflow')=='status':raise HTTPException(409,'Поля карточки 112 диспетчер ДДС не изменяет')
         if x.revision!=context.revision:raise HTTPException(409,'Карточка изменена в другой вкладке. Обновите данные.')
         if not x.comment.strip():raise HTTPException(422,'Опишите принятые меры')
         if x.verdict in ('corrected','clarification') and not x.findings.strip():raise HTTPException(422,'Опишите ошибки или сведения, которые нужно уточнить')
@@ -273,6 +308,7 @@ def register_dds(app,db,current):
         if u.role!='student':raise HTTPException(403)
         run,context=get_run(s,u,run_id,True);ensure_writable(run,context,s)
         if not context or context.scenario_snapshot.get('mode')!='dds':raise HTTPException(422,'Не упражнение ДДС')
+        if context.scenario_snapshot.get('dds_workflow')=='status':raise HTTPException(409,'Диспетчер ДДС ведёт статусы своей службы; контакты с бригадой и заявителем фиксируются в журнале действий')
         if not any(e.kind=='dds.validation' for e in events_for(s,run)):raise HTTPException(409,'Сначала сохраните проверку карточки')
         if x.service not in run.answers['services']:raise HTTPException(422,'Служба отсутствует в проверенном списке оповещения')
         if not x.receiver.strip() or not x.message.strip():raise HTTPException(422,'Укажите получателя и переданную информацию')

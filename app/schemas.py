@@ -8,6 +8,7 @@ class CardIn(BaseModel):
     address: str = Field(default='',max_length=1000)
     description: str = Field(default='',max_length=10000)
     services: list[str] = Field(default_factory=list,max_length=100)
+    service_phones: dict[str,str] = Field(default_factory=dict,max_length=100)
     operator_comment: str = Field(default='',max_length=5000)
     caller_name: str = Field(default='',max_length=200)
     caller_phone: str = Field(default='',max_length=100)

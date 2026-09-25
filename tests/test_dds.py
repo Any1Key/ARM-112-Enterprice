@@ -8,7 +8,7 @@ from app.models import Scenario,ScenarioSettings,SessionRun,RunContext,CardEvent
 
 def build(client,teacher,variants=None,source='generated',count=1):
     category=client.get('/api/classifier/types?q=1050102',headers=teacher).json()[0]['category']
-    response=client.post('/api/dds/exercises',headers=teacher,json={'title':'Проверка ДДС','categories':[category],'variants':variants or ['mixed'],'source':source,'count':count,'norm_seconds':180})
+    response=client.post('/api/dds/exercises',headers=teacher,json={'title':'Реагирование ДДС','categories':[category],'variants':variants or ['clean'],'source':source,'count':count,'norm_seconds':180})
     assert response.status_code==200,response.text
     ids=response.json()['scenario_ids']
     scenarios=client.get('/api/scenarios',headers=teacher).json()
@@ -37,54 +37,123 @@ def test_damage_is_bounded_and_clean_reference_unchanged(variant,fields):
     assert gold==original
 
 
-def test_dds_full_cycle_preserves_errors_hides_key_and_reports_corrections(client):
+def test_school_fire_in_shchukino_routes_by_district_and_subordination(client):
+    from app.main import SessionLocal
+    from app.schemas import CardIn
+    from app.workflows import resolved_card
+    base={'city':'Москва','district':'Щукино','object_name':'Школа № 1','incident_type':'Пожар в школе',
+          'address':'Москва, Щукино, школа № 1','description':'Горит школа, есть пострадавшие','victims_count':2}
+    with SessionLocal() as s:
+        result=resolved_card(s,CardIn(**base))
+        assert {'101','102','103','DDS_EDUCATION_MOSCOW','DDS_SHCHUKINO','DDS_SZAO'}<=set(result['services'])
+        other=resolved_card(s,CardIn(**{**base,'district':'Другой район'}))
+        assert 'DDS_SHCHUKINO' not in other['services']
+
+
+def test_dds_full_cycle_uses_own_service_statuses_and_read_only_card(client):
     teacher,student=auth(client,'teacher'),auth(client,'student')
     scenario=build(client,teacher)[0];gold=scenario['expected']['dds_gold']
-    assert scenario['initial_card']['services']!=gold['services']
+    assert scenario['initial_card']['services']==gold['services']
     assert client.get('/api/scenarios',headers=student).json()==[]
     assert client.post(f'/api/runs/{scenario["id"]}/start',headers=student).status_code==403
     lesson_id,run=lesson(client,teacher,student,[scenario]);id=run['run_id']
-    assert run['mode']=='dds' and run['card']['services']==scenario['initial_card']['services']
+    assert run['mode']=='dds' and run['dds_workflow']=='status' and run['card']['services']==scenario['initial_card']['services']
     assert not run['timer_frozen'] and run['dds_original']==run['card']
     own=client.get('/api/scenarios',headers=student).json()[0]
     assert own['expected'] is None and own['initial_card'] is None and own['source']=={}
     evidence=client.get(f'/api/reports/{id}',headers=student).json()
     assert 'expected' not in evidence and 'dds_reference_card' not in evidence
     assert 'dds_gold' not in str(run)
-    assert client.post(f'/api/dds/runs/{id}/handoff',headers=student,json={'service':'101','receiver':'Дежурный','message':'Адрес'}).status_code==409
+    assert client.post(f'/api/dds/runs/{id}/handoff',headers=student,json={'service':run['service_code'],'receiver':'Дежурный','message':'Адрес'}).status_code==409
     assert client.put(f'/api/runs/{id}/draft',headers=student,json={'revision':0,'card':gold}).status_code==403
     assert client.post(f'/api/runs/{id}/supplement/lock',headers=student).status_code==403
-    response=validation(client,student,run,gold);assert response.status_code==200,response.text
-    updated=response.json();assert updated['revision']==1 and updated['dds_original']==run['card']
     assert validation(client,student,run,gold).status_code==409
-    for code in gold['services']:
-        response=client.post(f'/api/dds/runs/{id}/handoff',headers=student,json={'service':code,'receiver':'Дежурный диспетчер','message':gold['address']+' '+gold['description']})
-        assert response.status_code==200,response.text
+    assert client.post(f'/api/runs/{id}/status',headers=student,json={'service_code':'не своя','status':'Принята','comment':'Нет'}).status_code==403
+    status=lambda name,comment:client.post(f'/api/runs/{id}/status',headers=student,json={'service_code':run['service_code'],'status':name,'comment':comment})
+    assert status('Принята','Сообщение принято').status_code==200
+    contact=client.post(f'/api/runs/{id}/work-call',headers=student,json={'destination':'Заявитель','phone':gold['caller_phone'],'message':'Уточнены обстоятельства обращения'})
+    assert contact.status_code==200,contact.text
+    others=[code for code in run['card']['services'] if code!=run['service_code']]
+    if others:
+        contact={'destination':'Другая служба','service':others[0],'message':'Согласованы действия'}
+        assert client.post(f'/api/runs/{id}/work-call',headers=student,json=contact).status_code==422
+        assert client.post(f'/api/runs/{id}/work-call',headers=student,json={**contact,'phone':'+7 495 000 00 00'}).status_code==422
+    assert status('Работы завершены','Бригада завершила реагирование').status_code==200
     report=client.post(f'/api/runs/{id}/finish',headers=student,json={}).json()
     assert report['score']==100,report
-    assert report['dds']['validation_count']==1 and not report['errors']
-    assert set(f['field'] for f in report['dds']['field_results'] if f['was_wrong'])=={'address','description','services'}
-    assert all(h['transport']=='Текстовая симуляция' for h in report['dds']['handoffs'])
+    assert report['dds']['workflow']=='status' and report['dds']['decision']=='Принята'
+    assert report['dds']['latest_status']=='Работы завершены' and not report['errors']
     teacher_report=client.get(f'/api/reports/{id}',headers=teacher).json()
-    assert teacher_report['dds_reference_card']==gold
+    assert 'comparisons' not in teacher_report
+    assert any(e['kind']=='work.call' for e in teacher_report['events'])
     import csv,io
     exported=list(csv.DictReader(io.StringIO(client.get('/api/reports/export.csv',headers=teacher).content.decode('utf-8-sig')),delimiter=';'))
     row=next(row for row in exported if row['Сессия']==str(id))
-    assert row['Режим']=='ДДС' and row['Вывод ДДС']=='corrected' and row['Способы передачи ДДС']=='Текстовая симуляция'
+    assert row['Режим']=='ДДС' and row['Решение ДДС']=='Принята' and row['Последний статус ДДС']=='Работы завершены'
     assert client.post(f'/api/lessons/{lesson_id}/next',headers=student).json()['done']
     assert client.post(f'/api/lessons/{lesson_id}/tasks/{scenario["id"]}/start',headers=student).status_code==409
     assert client.post(f'/api/runs/{id}/finish',headers=student,json={}).json()==report
 
 
-def test_clean_card_and_false_corrections_are_scored(client):
+def test_dds_card_cannot_be_corrected(client):
     teacher,student=auth(client,'teacher'),auth(client,'student')
     scenario=build(client,teacher,['clean'])[0];gold=scenario['expected']['dds_gold']
     _,run=lesson(client,teacher,student,[scenario]);id=run['run_id']
     bad=deepcopy(gold);bad['address']='Выдуманный адрес'
-    response=validation(client,student,run,bad);assert response.status_code==200,response.text
+    response=validation(client,student,run,bad);assert response.status_code==409,response.text
     report=client.post(f'/api/runs/{id}/finish',headers=student,json={}).json()
-    assert report['score']<100 and report['dds']['field_results'][1]['correct'] is False
-    assert report['parts']['Проверка карточки']==0
+    assert report['score']==0 and report['parts']['Решение своей службы']==0
+    assert client.get(f'/api/runs/{id}',headers=student).json()['card']['address']==gold['address']
+
+
+def test_wrong_service_rejects_card_and_other_service_contact_needs_number(client):
+    teacher,student=auth(client,'teacher'),auth(client,'student')
+    scenario=build(client,teacher,['services'])[0]
+    wrong=next(code for code in scenario['initial_card']['services'] if code not in scenario['expected']['dds_gold']['services'])
+    payload={'title':'Ошибочная маршрутизация','mode':'dds','service_code':wrong,'scenario_ids':[scenario['id']],'student_ids':[3]}
+    created=client.post('/api/lessons',headers=teacher,json=payload);assert created.status_code==200,created.text
+    lesson_id=created.json()['id'];client.post(f'/api/lessons/{lesson_id}/start',headers=teacher)
+    run=client.post(f'/api/lessons/{lesson_id}/next',headers=student).json();id=run['run_id']
+    assert run['service_code']==wrong
+    assert client.post(f'/api/runs/{id}/status',headers=student,json={'service_code':wrong,'status':'Не принята'}).status_code==422
+    assert client.post(f'/api/runs/{id}/status',headers=student,json={'service_code':wrong,'status':'Не принята','comment':'Не относится к нашей службе'}).status_code==200
+    report=client.post(f'/api/runs/{id}/finish',headers=student,json={}).json()
+    assert report['dds']['expected_decision']=='Не принята' and report['score']==100
+
+
+def test_other_service_contact_uses_number_on_received_card(client):
+    teacher,student=auth(client,'teacher'),auth(client,'student')
+    scenario=build(client,teacher,['clean'])[0]
+    codes=scenario['initial_card']['services']
+    if len(codes)<2:pytest.skip('Для сценария нужны две службы')
+    phone='+7 495 000 00 00';card={**scenario['initial_card'],'service_phones':{codes[1]:phone}}
+    response=client.put(f'/api/dds/exercises/{scenario["id"]}',headers=teacher,json={'card':card})
+    assert response.status_code==200,response.text
+    _,run=lesson(client,teacher,student,[scenario]);id=run['run_id']
+    other=codes[1] if codes[1]!=run['service_code'] else codes[0]
+    if other not in card['service_phones']:pytest.skip('Первая служба совпала со второй')
+    payload={'destination':'Другая служба','service':other,'phone':phone,'message':'Согласованы действия'}
+    assert client.post(f'/api/runs/{id}/work-call',headers=student,json=payload).status_code==200
+    assert client.post(f'/api/runs/{id}/work-call',headers=student,json={**payload,'phone':'другой номер'}).status_code==422
+
+
+def test_queued_dds_card_accrues_time_before_opening_and_after_skip(client):
+    from app.main import SessionLocal
+    from datetime import timedelta
+    teacher,student=auth(client,'teacher'),auth(client,'student')
+    scenarios=build(client,teacher,['clean'],count=2)
+    created=client.post('/api/lessons',headers=teacher,json={'title':'Очередь ДДС','mode':'dds','scenario_ids':[s['id'] for s in scenarios],'student_ids':[3]})
+    assert created.status_code==200,created.text
+    id=created.json()['id'];client.post(f'/api/lessons/{id}/start',headers=teacher)
+    with SessionLocal() as s:
+        row=s.get(Lesson,id);row.started_at-=timedelta(seconds=120);s.commit()
+    progress=next(item for item in client.get('/api/lessons',headers=student).json() if item['id']==id)
+    assert all(task['elapsed_seconds']>=120 for task in progress['tasks'])
+    run=client.post(f'/api/lessons/{id}/next',headers=student).json();assert run['elapsed_seconds']>=120
+    skipped=client.post(f'/api/runs/{run["run_id"]}/skip',headers=student).json()
+    assert skipped['elapsed_seconds']>=120
+    progress=next(item for item in client.get('/api/lessons',headers=student).json() if item['id']==id)
+    assert all(task['elapsed_seconds']>=120 for task in progress['tasks'])
 
 
 def test_dds_permissions_teacher_stop_and_skip_resume_timer(client):
@@ -96,13 +165,15 @@ def test_dds_permissions_teacher_stop_and_skip_resume_timer(client):
     assert client.post('/api/dds/exercises',headers=teacher,json={'source':'students'}).status_code==422
     scenario=build(client,teacher,['clean'])[0];lesson_id,run=lesson(client,teacher,student,[scenario]);id=run['run_id']
     with SessionLocal() as s:
-        r=s.get(SessionRun,id);r.started_at-=timedelta(seconds=45);s.commit()
+        context=s.get(RunContext,id);snapshot=context.scenario_snapshot
+        from datetime import datetime
+        context.scenario_snapshot={**snapshot,'queue_started_at':(datetime.fromisoformat(snapshot['queue_started_at'])-timedelta(seconds=45)).isoformat()};s.commit()
     report=client.post(f'/api/runs/{id}/skip',headers=student).json();assert report['elapsed_seconds']>=45
     resumed=client.post(f'/api/lessons/{lesson_id}/next',headers=student).json()
     assert resumed['run_id']==id and resumed['elapsed_seconds']>=45 and resumed['dds_original']==run['dds_original']
     assert client.put(f'/api/dds/runs/{id}/validation',headers=teacher,json={'revision':0,'card':scenario['expected']['dds_gold'],'verdict':'correct','comment':'Проверено'}).status_code==403
     response=client.post(f'/api/lessons/{lesson_id}/stop',headers=teacher);assert response.status_code==200,response.text
-    final=client.get(f'/api/runs/{id}',headers=student).json();assert final['finished_at'] and final['report']['parts']['Проверка карточки']==0
+    final=client.get(f'/api/runs/{id}',headers=student).json();assert final['finished_at'] and final['report']['parts']['Решение своей службы']==0
     assert validation(client,student,resumed,scenario['expected']['dds_gold'],'correct').status_code==409
 
 
@@ -124,18 +195,12 @@ def test_student_sources_are_copies_and_scoped_to_teacher(client):
     assert client.post('/api/dds/exercises',headers=teacher,json={'source':'students'}).status_code==422
 
 
-def test_sip_handoff_cannot_fake_connection_or_use_another_service(client):
-    from app.main import SessionLocal
+def test_new_dds_handoff_is_replaced_by_service_status_and_contact_log(client):
     teacher,student=auth(client,'teacher'),auth(client,'student')
     scenario=build(client,teacher,['clean'])[0];_,run=lesson(client,teacher,student,[scenario]);id=run['run_id'];gold=scenario['expected']['dds_gold']
-    assert validation(client,student,run,gold,'correct').status_code==200
-    assert client.post(f'/api/dds/runs/{id}/sip-call',headers=student,json={'service':gold['services'][0] if gold['services'] else '101'}).status_code in (409,422)
-    with SessionLocal() as s:
-        call=VoipCall(run_id=id,state='failed',sound_key='a'*64);s.add(call);s.flush();cid=call.id
-        s.add(CardEvent(run_id=id,user_id=3,kind='dds.call.prepared',data={'call_id':cid,'service':gold['services'][0] if gold['services'] else '101'}));s.commit()
-    if gold['services']:
-        response=client.post(f'/api/dds/runs/{id}/handoff',headers=student,json={'service':gold['services'][0],'receiver':'Дежурный','message':gold['address'],'call_id':cid})
-        assert response.status_code==409,response.text
+    assert validation(client,student,run,gold,'correct').status_code==409
+    response=client.post(f'/api/dds/runs/{id}/handoff',headers=student,json={'service':run['service_code'],'receiver':'Дежурный','message':gold['address']})
+    assert response.status_code==409,response.text
 
 
 def test_mixed_sources_editor_and_immutable_active_snapshot(client):
@@ -160,19 +225,22 @@ def test_mixed_sources_editor_and_immutable_active_snapshot(client):
     assert client.get('/api/scenarios',headers=headers).json()==[]
 
 
-def test_unavailable_handoff_and_overdue_time_do_not_receive_maximum(client):
+def test_overdue_first_reaction_does_not_receive_maximum(client):
     from app.main import SessionLocal
     from datetime import timedelta
     teacher,student=auth(client,'teacher'),auth(client,'student')
     scenario=build(client,teacher,['clean'])[0];gold=scenario['expected']['dds_gold'];_,run=lesson(client,teacher,student,[scenario]);id=run['run_id']
-    response=validation(client,student,run,gold,'correct');assert response.status_code==200,response.text
-    for code in gold['services']:
-        client.post(f'/api/dds/runs/{id}/handoff',headers=student,json={'service':code,'receiver':'Дежурный','message':gold['address'],'outcome':'unavailable'})
     with SessionLocal() as s:
-        r=s.get(SessionRun,id);r.started_at-=timedelta(seconds=300);s.commit()
+        context=s.get(RunContext,id);snapshot=context.scenario_snapshot
+        from datetime import datetime
+        started=datetime.fromisoformat(snapshot['queue_started_at'])-timedelta(seconds=300)
+        context.scenario_snapshot={**snapshot,'queue_started_at':started.isoformat()}
+        context.registered_at-=timedelta(seconds=300);s.commit()
+    service=run['service_code']
+    assert client.post(f'/api/runs/{id}/status',headers=student,json={'service_code':service,'status':'Принята','comment':'Принято'}).status_code==200
+    assert client.post(f'/api/runs/{id}/status',headers=student,json={'service_code':service,'status':'Работы завершены','comment':'Работы выполнены'}).status_code==200
     report=client.post(f'/api/runs/{id}/finish',headers=student,json={}).json()
-    assert report['parts']['Время обработки']==0 and report['time_deviation_seconds']>0
-    if gold['services']:assert report['parts']['Передача информации']==0
+    assert report['parts']['Время первой реакции']==0 and report['time_deviation_seconds']>0
 
 
 def test_teacher_stop_closes_active_dds_sip_call(client,monkeypatch):
@@ -190,64 +258,40 @@ def test_teacher_stop_closes_active_dds_sip_call(client,monkeypatch):
     assert ('Hangup',{'Channel':'PJSIP/arm3-test'}) in actions
 
 
-@pytest.mark.parametrize('complete',[False,True])
-def test_required_sip_template_preserves_policy_and_scores_without_blocking_finish(client,complete):
-    from app.main import SessionLocal
-    from datetime import datetime,timezone
+def test_dds_template_sets_own_service_and_does_not_grade_legacy_sip_policy(client):
     teacher,student=auth(client,'teacher'),auth(client,'student')
     scenario=build(client,teacher,['clean'])[0];gold=scenario['expected']['dds_gold']
-    payload={'title':'Оценка телефонии','mode':'dds','require_sip':True,'scenario_ids':[scenario['id']],'student_ids':[]}
+    service=gold['services'][0]
+    payload={'title':'Реагирование службы','mode':'dds','require_sip':True,'service_code':service,'scenario_ids':[scenario['id']],'student_ids':[]}
     response=client.post('/api/lesson-templates',headers=teacher,json=payload)
     assert response.status_code==200,response.text
     template=response.json()['id']
-    assert next(x for x in client.get('/api/lesson-templates',headers=teacher).json() if x['id']==template)['require_sip'] is True
     lesson_id=client.post(f'/api/lesson-templates/{template}/assign',headers=teacher,json={'student_ids':[3]}).json()['id']
-    assert next(x for x in client.get('/api/lessons',headers=student).json() if x['id']==lesson_id)['require_sip'] is True
     assert client.post(f'/api/lessons/{lesson_id}/start',headers=teacher).status_code==200
     run=client.post(f'/api/lessons/{lesson_id}/next',headers=student).json();id=run['run_id']
-    assert run['require_sip'] is True
-    run=validation(client,student,run,gold,'correct').json()
-    message={'service':gold['services'][0],'receiver':'Дежурный','message':gold['address']+' '+gold['description'],'outcome':'accepted'}
-    assert client.post(f'/api/dds/runs/{id}/handoff',headers=student,json=message).status_code==409
-    # Historical/injected text evidence cannot earn telephone points.
-    with SessionLocal() as s:
-        s.add(CardEvent(run_id=id,user_id=3,kind='dds.handoff',data={**message,'transport':'Текстовая симуляция','call_id':None}));s.commit()
-    if complete:
-        for service in gold['services']:
-            with SessionLocal() as s:
-                call=VoipCall(run_id=id,state='ended',sound_key='a'*64,answered_at=datetime.now(timezone.utc),ended_at=datetime.now(timezone.utc));s.add(call);s.flush();call_id=call.id
-                s.add(CardEvent(run_id=id,user_id=3,kind='dds.call.prepared',data={'call_id':call_id,'service':service}));s.commit()
-            response=client.post(f'/api/dds/runs/{id}/handoff',headers=student,json={**message,'service':service,'call_id':call_id})
-            assert response.status_code==200,response.text
+    assert run['service_code']==service and run['require_sip'] is False
+    assert client.post(f'/api/runs/{id}/status',headers=student,json={'service_code':service,'status':'Принята','comment':'Принято'}).status_code==200
+    assert client.post(f'/api/runs/{id}/status',headers=student,json={'service_code':service,'status':'Работы завершены','comment':'Работы выполнены'}).status_code==200
     response=client.post(f'/api/runs/{id}/finish',headers=student,json={})
     assert response.status_code==200,response.text
-    report=response.json();assert report['dds']['require_sip'] is True
+    report=response.json();assert report['score']==100 and report['dds']['workflow']=='status'
     import csv,io
     rows=list(csv.DictReader(io.StringIO(client.get('/api/reports/export.csv',headers=teacher).content.decode('utf-8-sig')),delimiter=';'))
     exported=next(row for row in rows if row['Сессия']==str(id))
-    assert exported['Учёт SIP-звонков ДДС']=='Да'
-    assert bool(exported['Службы без завершённого звонка ДДС']) is not complete
-    if complete:
-        assert report['score']==100 and not report['dds']['pending_sip_services'] and not report['dds']['missing_call_services']
-    else:
-        assert report['score']==75 and report['parts']['Передача информации']==0
-        assert report['dds']['missing_call_services']==sorted(gold['services'])
-        assert report['dds']['pending_sip_services']==sorted(gold['services'])
-        evidence=client.get(f'/api/reports/{id}',headers=teacher).json()
-        assert evidence['report']['dds']['missing_call_services']==sorted(gold['services'])
+    assert exported['Своя служба ДДС']==service and exported['Решение ДДС']=='Принята'
 
 
-def test_required_sip_teacher_stop_records_incomplete_exercise(client):
+def test_teacher_stop_records_incomplete_dds_statuses(client):
     teacher,student=auth(client,'teacher'),auth(client,'student')
     scenario=build(client,teacher,['clean'])[0]
-    payload={'title':'Остановка телефонии','mode':'dds','require_sip':True,'scenario_ids':[scenario['id']],'student_ids':[3]}
+    payload={'title':'Остановка ДДС','mode':'dds','scenario_ids':[scenario['id']],'student_ids':[3]}
     id=client.post('/api/lessons',headers=teacher,json=payload).json()['id']
     client.post(f'/api/lessons/{id}/start',headers=teacher)
     run=client.post(f'/api/lessons/{id}/next',headers=student).json()
     assert client.post(f'/api/lessons/{id}/stop',headers=teacher).status_code==200
     report=client.get(f'/api/runs/{run["run_id"]}',headers=student).json()['report']
-    assert report['dds']['require_sip'] and report['dds']['missing_call_services']
-    assert report['parts']['Передача информации']==0
+    assert report['dds']['workflow']=='status' and report['score']==0
+    assert report['parts']['Решение своей службы']==0
 
 
 def test_dds_report_calls_show_service_recipient_recording_and_do_not_reuse_112_audio(client,monkeypatch,tmp_path):
@@ -296,9 +340,9 @@ def test_dds_template_without_students_can_be_edited_and_assigned_to_different_g
         assigned.append(response.json()['id'])
     assert len(set(assigned))==2
     saved=next(t for t in client.get('/api/lesson-templates',headers=teacher).json() if t['id']==id)
-    assert saved['student_ids']==[] and saved['require_sip'] is True
+    assert saved['student_ids']==[] and saved['require_sip'] is False
     assert client.put(path,headers=teacher,json={**updated,'scenario_ids':[scenarios[1]['id']]}).status_code==200
     lessons=client.get('/api/lessons',headers=teacher).json()
     for row in (x for x in lessons if x['id'] in assigned):
-        assert row['scenario_ids']==updated['scenario_ids'] and row['require_sip'] is True
+        assert row['scenario_ids']==updated['scenario_ids'] and row['require_sip'] is False
     assert {x['id'] for x in client.get('/api/scenarios',headers=student).json()}==set(updated['scenario_ids'])

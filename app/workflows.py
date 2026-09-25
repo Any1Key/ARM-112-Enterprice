@@ -13,7 +13,7 @@ from app.models import (User, Scenario, SessionRun, Audit, ClassifierVersion, In
 from app.schemas import (CardIn, DraftIn, ResolveIn, SettingsIn, LessonIn, LessonTemplateIn, TemplateAssignmentIn, StatusIn,
                          WorkCallIn, ReviewIn, UserIn, UserUpdateIn)
 from app.classifier import active_workbook, parse_workbook, resolve_rules, FLAGS, SERVICE_NAMES
-from app.training import available_statuses, card_indicator, REJECTED, REFUSED, TERMINAL
+from app.training import available_statuses, card_indicator, ACCEPTED, REJECTED, REFUSED, TERMINAL
 
 SOURCES=Path('source_materials')
 
@@ -146,6 +146,15 @@ def resolved_card(s,card):
         if code in card.excluded_services:continue
         if code not in dispatch:
             dispatch[code]={'code':code,'name':SERVICE_NAMES.get(code,code),'visible':True,'origin':'Вручную','mappings':[]}
+    # The customer supplied this concrete district/ownership case. Broader
+    # territorial routing requires an authoritative address and ownership list.
+    school_fire=(card.city.strip().casefold()=='москва' and card.district.strip().casefold()=='щукино'
+                 and 'школ' in card.object_name.casefold() and ('пожар' in card.incident_type.casefold() or 'горит' in card.description.casefold())
+                 and (flags.get('victims') or bool(card.victims_count)))
+    if school_fire:
+        for code in ('101','102','103','DDS_EDUCATION_MOSCOW','DDS_SHCHUKINO','DDS_SZAO'):
+            dispatch.setdefault(code,{'code':code,'name':SERVICE_NAMES[code],'visible':True,'origin':'Район Щукино и подчинённость школы','mappings':[]})
+        dispatch.pop('TERRITORY',None)
     data['classifier_ids']=identifiers;data['classifications']=types;data['flags']=flags
     if types: data['incident_type']='; '.join(item['title'] for item in types)
     if not data['address'].strip():
@@ -187,14 +196,24 @@ def history_for(events):
             result.setdefault(event.data['service_code'],[]).append({**event.data,'at':aware(event.at).isoformat(),'user_id':event.user_id})
     return result
 
+def status_options(context,current,service):
+    options=available_statuses(current,service)
+    if context and context.scenario_snapshot.get('dds_workflow')=='status' and current in ('Добавлена','Получена службой',None) and REJECTED not in options:
+        return options+[REJECTED]
+    return options
+
 def elapsed_seconds(run,context,at=None):
     snapshot=context.scenario_snapshot if context else {}
-    if run.finished_at and (run.report or {}).get('skipped'):
+    if run.finished_at and (run.report or {}).get('skipped') and snapshot.get('dds_workflow')!='status':
         return run.report['elapsed_seconds']
     if snapshot.get('mode','call')=='call' and context and context.registered_at and 'registration_elapsed_seconds' in snapshot:
         return snapshot['registration_elapsed_seconds']
     active_since=snapshot.get('timer_active_since')
     anchor=datetime.fromisoformat(active_since) if active_since else aware(run.started_at)
+    if snapshot.get('dds_workflow')=='status' and snapshot.get('queue_started_at'):
+        anchor=datetime.fromisoformat(snapshot['queue_started_at'])
+        cutoff=at or aware(run.finished_at) or now()
+        return max(0,int((cutoff-anchor).total_seconds()))
     cutoff=aware(context.registered_at) if context and context.registered_at and snapshot.get('mode','call')=='call' else (at or aware(run.finished_at) or now())
     return max(0,int(snapshot.get('timer_elapsed_seconds',0)+max(0,(cutoff-anchor).total_seconds())))
 
@@ -217,7 +236,11 @@ def run_payload(s,run,context):
     snapshot=context.scenario_snapshot if context else {}
     indicator=card_indicator(context,{code:records for code,records in history.items() if not run.answers.get('dispatch') or any(service['code']==code and service.get('visible',True) for service in run.answers['dispatch'])},now())
     if snapshot.get('mode')=='dds':
-        indicator='Завершена' if run.finished_at else 'Передана службам' if any(e.kind=='dds.handoff' for e in events) else 'Проверена ДДС' if any(e.kind=='dds.validation' for e in events) else 'Получена ДДС'
+        if snapshot.get('dds_workflow')=='status':
+            own=history.get(snapshot.get('service_code'),[])
+            indicator='Завершена' if run.finished_at else own[-1]['status'] if own else 'Получена ДДС'
+        else:
+            indicator='Завершена' if run.finished_at else 'Передана службам' if any(e.kind=='dds.handoff' for e in events) else 'Проверена ДДС' if any(e.kind=='dds.validation' for e in events) else 'Получена ДДС'
     previous_indicator=snapshot.get('last_indicator')
     if context and context.registered_at and previous_indicator!=indicator:
         if indicator in ('Не оповещено','Не завершено') or previous_indicator in ('Не оповещено','Не завершено'):
@@ -237,9 +260,10 @@ def run_payload(s,run,context):
             'postprocessing_seconds':postprocessing_seconds(run,context,events),
             'last_request_id':snapshot.get('last_draft_request_id'),'registered_at':context.registered_at if context else None,
             'status':'Пропущена' if (run.report or {}).get('skipped') else indicator,'service_history':history,
-            'available_statuses':{code:available_statuses(records[-1]['status'],code) for code,records in history.items()},
+            'available_statuses':{code:status_options(context,records[-1]['status'],code) for code,records in history.items()},
             'events':[{'id':e.id,'at':aware(e.at),'kind':e.kind,'data':e.data,'user_id':e.user_id} for e in events],
             'require_sip':bool(snapshot.get('require_sip',False)),
+            'dds_workflow':snapshot.get('dds_workflow'),
             'dds_original':snapshot.get('dds_original') if snapshot.get('mode')=='dds' else None,
             'dds_reference':snapshot.get('caller_text','') if snapshot.get('mode')=='dds' else None,
             'parent_run_id':snapshot.get('parent_run_id'),'sms_unread':unread,'reminder':snapshot.get('reminder'),'report':run.report}
@@ -272,7 +296,7 @@ def lesson_progress(s,lesson,student_id):
         tasks.append({'scenario_id':identifier,'title':context.scenario_snapshot.get('title',title) if context else title,
                       'status':status,'run_id':run.id if run else None,'score':run.score if run and status=='completed' else None,
                       'started_at':aware(run.started_at) if run else None,'finished_at':aware(run.finished_at) if run else None,
-                      'elapsed_seconds':(run.report or {}).get('elapsed_seconds') if run and run.finished_at else None})
+                      'elapsed_seconds':max(0,int((now()-aware(lesson.started_at)).total_seconds())) if lesson.mode=='dds' and lesson.started_at and status in ('pending','skipped','in_progress') else (run.report or {}).get('elapsed_seconds') if run and run.finished_at else None})
     counts={status:sum(task['status']==status for task in tasks) for status in ('pending','in_progress','skipped','completed')}
     return {'tasks':tasks,'counts':{**counts,'total':len(tasks)},'all_completed':bool(tasks) and counts['completed']==len(tasks)}
 
@@ -299,7 +323,7 @@ def begin_run(s,u,scenario,lesson=None):
     if previous and previous.finished_at and (previous.report or {}).get('skipped'):
         context=s.get(RunContext,previous.id)
         resumed_at=now();saved_elapsed=previous.report['elapsed_seconds']
-        context.scenario_snapshot={**context.scenario_snapshot,'timer_elapsed_seconds':saved_elapsed,'timer_active_since':resumed_at.isoformat()}
+        context.scenario_snapshot={**context.scenario_snapshot,'timer_elapsed_seconds':0 if context.scenario_snapshot.get('dds_workflow')=='status' else saved_elapsed,'timer_active_since':context.scenario_snapshot.get('queue_started_at',resumed_at.isoformat())}
         previous.finished_at=None;previous.report=None;previous.score=None
         s.add(CardEvent(run_id=previous.id,user_id=u.id,kind='card.resume',at=resumed_at,data={'elapsed_seconds':saved_elapsed}))
         log(s,u,'run.resume',{'run_id':previous.id,'elapsed_seconds':saved_elapsed})
@@ -307,7 +331,7 @@ def begin_run(s,u,scenario,lesson=None):
     settings=settings_for(s,scenario)
     snapshot={'title':scenario.title,'category':scenario.category,'caller_text':scenario.caller_text,
               'expected':scenario.expected,'mode':lesson.mode if lesson else (settings.mode if settings else 'call'),
-              'service_code':lesson.service_code if lesson else '112','require_sip':bool(lesson and lesson.require_sip)}
+              'service_code':lesson.service_code if lesson else '112','require_sip':bool(lesson and lesson.require_sip and lesson.mode!='dds')}
     run=SessionRun(scenario_id=scenario.id,student_id=u.id)
     s.add(run);s.flush()
     context=RunContext(run_id=run.id,lesson_id=lesson.id if lesson else None,scenario_snapshot=snapshot)
@@ -320,9 +344,15 @@ def begin_run(s,u,scenario,lesson=None):
         initial=settings.initial_card if settings else {}
         if not initial.get('description') or not snapshot['expected'].get('dds_gold'):raise HTTPException(422,'Для ДДС нужна карточка и проверенный эталон')
         run.answers=received_card(initial,directory(s))
-        context.scenario_snapshot={**snapshot,'dds_original':deepcopy(run.answers)}
+        service=snapshot['service_code']
+        if service=='TERRITORY':
+            service=next(iter(run.answers['services']),None)
+        if not service or service not in run.answers['services']:raise HTTPException(422,'Учебной службы нет в карточке ДДС')
+        snapshot['service_code']=service
+        context.scenario_snapshot={**snapshot,'dds_original':deepcopy(run.answers),'dds_workflow':'status','queue_started_at':aware(lesson.started_at).isoformat() if lesson and lesson.started_at else now().isoformat()}
         register_card(s,u,run,context)
         s.add(CardEvent(run_id=run.id,user_id=u.id,kind='dds.received',data={'source':settings.source,'services':run.answers['services']}))
+        s.add(CardEvent(run_id=run.id,user_id=u.id,kind='service.status',data={'service_code':service,'status':'Получена службой','comment':'','unit_number':''}))
     elif snapshot['mode']=='dispatch':
         initial=settings.initial_card if settings else {}
         if not initial.get('address') or not initial.get('description'): raise HTTPException(422,'Для задания ДДС нужна подготовленная карточка')
@@ -340,8 +370,8 @@ def finalize_run(s,u,run,context,card,evaluate,commit=True):
     scenario=Scenario(**{key:snapshot[key] for key in ('title','category','caller_text','expected')}) if snapshot else s.get(Scenario,run.scenario_id)
     elapsed=elapsed_seconds(run,context)
     if context and snapshot.get('mode')=='dds':
-        from app.dds import evaluate_dds
-        report=evaluate_dds(s,run,context,elapsed)
+        from app.dds import evaluate_dds, evaluate_status_dds
+        report=evaluate_status_dds(s,run,context,elapsed) if snapshot.get('dds_workflow')=='status' else evaluate_dds(s,run,context,elapsed)
         text=run.answers.get('operator_comment','')
     elif context and snapshot.get('mode')=='dispatch':
         history=history_for(events_for(s,run));own=history.get(snapshot['service_code'],[])
@@ -541,17 +571,19 @@ def register_routes(app,db,current,evaluate,pwd):
         return [{'id':x.id,'username':x.username} for x in s.scalars(select(User).where(User.role=='student'))]
 
     def validate_lesson(x,u,s):
-        if x.require_sip and x.mode!='dds':raise HTTPException(422,'Обязательный SIP-звонок доступен только для проверки ДДС')
+        if x.require_sip and x.mode!='dds':raise HTTPException(422,'Учёт SIP-звонков относится только к историческому режиму ДДС')
+        if x.mode=='dds':x.require_sip=False
         x.title=x.title.strip()
         if not x.title:raise HTTPException(422,'Введите название занятия')
         x.scenario_ids=list(dict.fromkeys(x.scenario_ids));x.student_ids=list(dict.fromkeys(x.student_ids))
-        if x.mode in ('call','dds'):x.service_code='TERRITORY'
+        if x.mode=='call':x.service_code='TERRITORY'
         for identifier in set(x.scenario_ids):
             scenario=s.get(Scenario,identifier)
             if not scenario or scenario.created_by!=u.id: raise HTTPException(403,'Выберите свои сценарии')
             setting=settings_for(s,scenario)
             if setting and (not setting.published or setting.mode!=x.mode): raise HTTPException(422,'Нужен утверждённый сценарий выбранного режима')
             if x.mode=='dds' and (not setting or not setting.initial_card.get('description') or not scenario.expected.get('dds_gold')):raise HTTPException(422,'Выберите подготовленные упражнения проверки ДДС')
+            if x.mode=='dds' and x.service_code!='TERRITORY' and x.service_code not in setting.initial_card.get('services',[]):raise HTTPException(422,'Учебной службы нет в карточке ДДС')
             if x.mode=='dispatch':
                 if not setting or not setting.initial_card.get('address'): raise HTTPException(422,'Для ДДС требуется исходная карточка')
                 if x.service_code not in setting.initial_card.get('services',[]): raise HTTPException(422,'Службы занятия нет в карточке ДДС')
@@ -655,7 +687,8 @@ def register_routes(app,db,current,evaluate,pwd):
             run,context=begin_run(s,u,scenario,lesson);return run_payload(s,run,context)
         assert_teacher(u)
         if lesson.teacher_id!=u.id: raise HTTPException(403)
-        if action=='start' and lesson.status=='prepared': lesson.status='active'
+        if action=='start' and lesson.status=='prepared':
+            lesson.status='active';lesson.started_at=now()
         elif action=='stop' and lesson.status=='active':
             lesson.status='finished'
             runs=list(s.scalars(select(SessionRun).join(RunContext).where(RunContext.lesson_id==lesson.id,SessionRun.finished_at.is_(None))))
@@ -780,8 +813,9 @@ def register_routes(app,db,current,evaluate,pwd):
         if x.service_code!=context.scenario_snapshot.get('service_code','112'): raise HTTPException(403,'Можно менять статус только своей учебной службы')
         history=history_for(events_for(s,run));own=history.get(x.service_code,[])
         if not own: raise HTTPException(422,'Службы нет в списке оповещения')
-        if x.status not in available_statuses(own[-1]['status'],x.service_code): raise HTTPException(409,'Недопустимый переход статуса')
+        if x.status not in status_options(context,own[-1]['status'],x.service_code): raise HTTPException(409,'Недопустимый переход статуса')
         if x.status in (REJECTED,REFUSED) and not x.comment.strip(): raise HTTPException(422,'Укажите причину отказа и сведения о передаче информации')
+        if context.scenario_snapshot.get('mode')=='dds' and context.scenario_snapshot.get('dds_workflow')=='status' and not x.comment.strip():raise HTTPException(422,'Добавьте комментарий к статусу')
         s.add(CardEvent(run_id=run.id,user_id=u.id,kind='service.status',data=x.model_dump()))
         log(s,u,'service.status',{'run_id':run.id,**x.model_dump()});s.commit();return run_payload(s,run,context)
 
@@ -789,6 +823,12 @@ def register_routes(app,db,current,evaluate,pwd):
     def add_call(run_id:int,x:WorkCallIn,u=Depends(current),s=Depends(db)):
         if u.role!='student': raise HTTPException(403)
         run,context=get_run(s,u,run_id,True);ensure_writable(run,context,s)
+        if context and context.scenario_snapshot.get('dds_workflow')=='status' and x.destination=='Другая служба':
+            if x.service not in run.answers.get('services',[]) or x.service==context.scenario_snapshot['service_code']:
+                raise HTTPException(422,'Можно связаться только с другой службой, получившей эту карточку')
+            known_phone=run.answers.get('service_phones',{}).get(x.service)
+            if not known_phone:raise HTTPException(422,'Телефон этой службы не указан в карточке')
+            if x.phone.strip()!=known_phone:raise HTTPException(422,'Используйте номер службы из карточки')
         if context and context.scenario_snapshot.get('mode')=='dispatch':
             own=history_for(events_for(s,run)).get(context.scenario_snapshot['service_code'],[])
             if own and own[-1]['status'] in TERMINAL: raise HTTPException(409,'Служба завершила работу; редактирование закрыто')
