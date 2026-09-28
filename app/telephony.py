@@ -10,6 +10,34 @@ from app.models import User, SipAccount, VoipCall, SessionRun, RunContext, Accou
 from app.workflows import get_run, ensure_writable, check_scenario_access, settings_for, aware
 from app.speech_text import tts_text
 provision_lock=threading.Lock()
+DISPATCH_EXTENSIONS={'101','102','103','104'}
+
+def sync_dispatch_permissions(session_factory):
+    """Publish active DDS service permissions for the physical SIP dialplan."""
+    root=Path(os.getenv('SIP_PROVISION_ROOT','/provision'));root.mkdir(exist_ok=True)
+    allowed=set()
+    with session_factory() as s:
+        for run in s.scalars(select(SessionRun).where(SessionRun.finished_at.is_(None))):
+            context=s.get(RunContext,run.id)
+            if not context or context.scenario_snapshot.get('mode') not in ('dispatch','dds'):continue
+            services=(run.answers or {}).get('services',[])
+            for extension in DISPATCH_EXTENSIONS.intersection(str(code) for code in services):
+                allowed.add(f'dispatch-{run.student_id}-{extension}.allow')
+    for path in root.glob('dispatch-*.allow'):
+        if path.name not in allowed:
+            try:path.unlink()
+            except FileNotFoundError:pass
+    for name in allowed:
+        path=root/name
+        if not path.exists():path.write_text('active DDS assignment\n')
+
+def start_dispatch_permission_sync(session_factory):
+    def worker_loop():
+        while True:
+            try:sync_dispatch_permissions(session_factory)
+            except Exception:pass
+            time.sleep(1)
+    launch_worker(worker_loop,())
 
 def frame(data):
     return ''.join(f'{key}: {value}\r\n' for key,value in data.items())+'\r\n'
@@ -62,6 +90,7 @@ def write_accounts(s):
         for device in ('browser','hardware'):
             name=account.username+('-hw' if device=='hardware' else '')
             media = "webrtc=yes\nmedia_encryption=dtls\ndtls_auto_generate_cert=yes\nuse_avpf=yes\nice_support=yes\nrtcp_mux=yes" if device=='browser' else "webrtc=no\nmedia_encryption=no\nuse_avpf=no\nice_support=no\nrtcp_mux=no"
+            media_address = '' if device=='browser' else f"media_address={os.getenv('SIP_PUBLIC_ADDRESS', '').strip()}"
             text+=f"""[{name}]
 type=endpoint
 transport={'transport-ws' if device=='browser' else 'transport-udp'}
@@ -73,6 +102,7 @@ auth={name}-auth
 aors={name}
 set_var=ARM_USER_ID={account.user_id}
 {media}
+{media_address}
 rtp_symmetric=yes
 force_rport=yes
 rewrite_contact=yes
@@ -119,6 +149,7 @@ def call_error(reason):
             '8':'Телефон не принял вызов.'}.get(str(reason),'Не удалось соединить учебный вызов. Переподключите телефон и повторите.')
 
 def register_telephony(app,db,current,session_factory):
+    start_dispatch_permission_sync(session_factory)
     def permitted(s,u,run_id):
         run,context=get_run(s,u,run_id)
         return run,context
