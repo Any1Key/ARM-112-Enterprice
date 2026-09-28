@@ -67,6 +67,14 @@ renderScenarios=function(){
  if(state.role!=='student')return renderScenariosBeforeTaskStatus();
  const query=$('scenario-search').value.toLocaleLowerCase();const target=$('scenarios');target.replaceChildren();
  const list=state.scenarios.filter(s=>(s.title+' '+s.category).toLocaleLowerCase().includes(query));
+ // The card currently being processed must remain visible at the top of the list.
+ // Keep the original order for all other cards (stable sort).
+ const order={in_progress:0,pending:1,skipped:2,completed:3};
+ list.sort((left,right)=>{
+  const leftStatus=scenarioLessonTask(left.id)?.task.status;
+  const rightStatus=scenarioLessonTask(right.id)?.task.status;
+  return (order[leftStatus]??4)-(order[rightStatus]??4);
+ });
  if(!list.length){target.append(el('p','empty-table',query?'По вашему поиску заданий нет.':'Нет назначенных заданий. Дождитесь назначения преподавателя или откройте «Занятия».'));return;}
  for(const scenario of list){
   const item=scenarioLessonTask(scenario.id);const completed=item?.task.status==='completed';

@@ -90,6 +90,39 @@ def test_sms_queue_acceptance_reply_read_history_and_presence(client):
     assert client.get(f"/api/runs/{run['run_id']}",headers=student).json()['sms_unread']==0
 
 
+def test_incoming_sms_can_be_accepted_while_another_card_is_open(client):
+    student,teacher=auth(client,'student'),auth(client,'teacher')
+    first=create_scenario(client,teacher,assigned=True)
+    second=create_scenario(client,teacher)
+    current=client.post(f'/api/runs/{first}/start',headers=student).json()
+    assert client.put('/api/operator/presence',headers=student,json={'state':'available'}).status_code==200
+    incoming=client.post('/api/sms/incoming',headers=teacher,json={'student_id':3,'scenario_id':second,'aon':'+7 900 000 00 02','text':'Дополнительное обращение во время обработки'})
+    assert incoming.status_code==200,incoming.text
+    queue=client.get('/api/incoming/queue',headers=student).json()
+    queued=next(item for item in queue if item['text'].startswith('Дополнительное'))
+    accepted=client.post(f"/api/sms/{queued['id']}/accept",headers=student)
+    assert accepted.status_code==200,accepted.text
+    assert accepted.json()['run_id']!=current['run_id']
+    assert accepted.json()['parent_run_id']==current['run_id']
+    active=client.get('/api/active-runs',headers=student).json()
+    assert {run['run_id'] for run in active}=={current['run_id'],accepted.json()['run_id']}
+    assert client.post(f"/api/runs/{accepted.json()['run_id']}/skip",headers=student).status_code==200
+    assert client.post(f"/api/runs/{current['run_id']}/skip",headers=student).status_code==200
+
+
+def test_incoming_call_uses_the_same_parallel_contact_queue(client):
+    student,teacher=auth(client,'student'),auth(client,'teacher')
+    scenario=create_scenario(client,teacher,assigned=True)
+    assert client.put('/api/operator/presence',headers=student,json={'state':'available'}).status_code==200
+    incoming=client.post('/api/calls/incoming',headers=teacher,json={'student_id':3,'scenario_id':scenario,'aon':'+7 900 000 00 03','text':'Входящий учебный звонок'})
+    assert incoming.status_code==200,incoming.text
+    contact=next(item for item in client.get('/api/incoming/queue',headers=student).json() if item['aon']=='+7 900 000 00 03')
+    accepted=client.post(f"/api/incoming/{contact['id']}/accept",headers=student)
+    assert accepted.status_code==200,accepted.text
+    assert accepted.json()['card']['channel']=='Учебный входящий звонок'
+    assert client.post(f"/api/runs/{accepted.json()['run_id']}/skip",headers=student).status_code==200
+
+
 def test_services_exception_needs_reason_and_is_preserved(client):
     student,teacher=auth(client,'student'),auth(client,'teacher');run=start(client,student,teacher)
     kind=client.get('/api/classifier/types?q=1050102',headers=student).json()[0]

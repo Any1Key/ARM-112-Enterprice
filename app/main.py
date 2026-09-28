@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
 from pydantic import BaseModel, Field
-from sqlalchemy import inspect, text, create_engine, String, Integer, DateTime, ForeignKey, Text, JSON, select, update
+from sqlalchemy import create_engine, String, Integer, DateTime, ForeignKey, Text, JSON, select, update, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
 from passlib.context import CryptContext
 
@@ -20,7 +20,7 @@ engine=create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal=sessionmaker(engine, expire_on_commit=False)
 pwd=CryptContext(schemes=['bcrypt'], deprecated='auto')
 
-from app.models import Base, User, Scenario, SessionRun, Audit, RunContext, ScenarioSettings, ExpertReview, Lesson, Material, AccountState, CardAttachment, CardEvent, VoipCall, SipAccount, AiJob
+from app.models import Base, User, Scenario, SessionRun, Audit, RunContext, ScenarioSettings, ExpertReview, Lesson, Material, AccountState, CardAttachment, CardEvent, VoipCall, SipAccount, AiJob, IncomingContact
 from app.workflows import (import_classifier, import_materials, register_routes, check_scenario_access, get_run,
                            begin_run, finalize_run, ensure_writable, assert_editable, aware, resolved_card)
 
@@ -129,6 +129,10 @@ def startup():
     if 'started_at' not in {c['name'] for c in inspect(engine).get_columns('lessons')}:
         with engine.begin() as connection:
             connection.execute(text('ALTER TABLE lessons ADD COLUMN started_at TIMESTAMP'))
+    # Additive migration for installations created before lesson incoming settings existed.
+    if 'incoming_config' not in {column['name'] for column in inspect(engine).get_columns('lessons')}:
+        with engine.begin() as connection:
+            connection.execute(text('ALTER TABLE lessons ADD COLUMN incoming_config JSON'))
     with SessionLocal() as s:
         import_classifier(s); import_materials(s); seed(s)
         from app.bundled_scenarios import install_practice_catalog

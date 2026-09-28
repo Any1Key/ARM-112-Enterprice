@@ -3,6 +3,7 @@ const phone=el('div','sip-controls');phone.hidden=true;const connectPhone=el('bu
 const remoteAudio=el('audio');remoteAudio.autoplay=true;remoteAudio.controls=false;remoteAudio.preload='metadata';remoteAudio.hidden=true;remoteAudio.setAttribute('aria-label','Аудио учебного звонка');phone.append(remoteAudio);
 const disconnectPhone=el('button','','Отключить телефон');disconnectPhone.type='button';disconnectPhone.disabled=true;phone.insertBefore(disconnectPhone,phoneStatus);disconnectPhone.addEventListener('click',()=>disconnectTrainingPhone());
 let sipUA=null,sipSession=null,sipRun=null,sipIceServers=[];
+const incomingSipSessions=new Map();
 let sipCallId=null,sipAttempt=0,sipStarting=false,sipPollBusy=false;
 let releasePhoneLock=null,lockedPhoneUser=null;
 async function lockBrowserPhone(username){
@@ -41,9 +42,21 @@ async function connectSip(){
   ua.on('registered',()=>{if(sipUA!==ua)return;phoneStatus.textContent='Телефон подключён';connectPhone.disabled=true;warmSelectedAudio();});
   ua.on('registrationFailed',()=>{if(sipUA!==ua)return;phoneStatus.textContent='Ошибка регистрации';connectPhone.disabled=false;});
   ua.on('disconnected',()=>{if(sipUA!==ua)return;phoneStatus.textContent='Нет соединения';connectPhone.disabled=false;});
-  ua.on('newRTCSession',event=>{
+  ua.on('newRTCSession',async event=>{
     if(event.originator!=='remote')return;
     const session=event.session;
+    const display=session.remote_identity?.display_name||'';
+    const displayMatch=display.match(/#(\d+)/);
+    let incomingContactId=displayMatch?Number(displayMatch[1]):null;
+    if(!incomingContactId){try{const queue=await api('/api/incoming/queue');incomingContactId=queue.find(item=>item.kind==='call')?.id||null;}catch{}}
+    if(incomingContactId){
+      incomingSipSessions.set(String(incomingContactId),session);phoneStatus.textContent='Входящий учебный звонок';
+      const audio=connection=>connection.addEventListener('track',event=>{if(sipSession!==session)return;remoteAudio.srcObject=event.streams[0];remoteAudio.play().catch(()=>{});});
+      session.on('peerconnection',event=>audio(event.peerconnection));
+      session.on('ended',()=>incomingSipSessions.delete(String(incomingContactId)));
+      session.on('failed',()=>incomingSipSessions.delete(String(incomingContactId)));
+      show('call',true);return;
+    }
     if(sipUA!==ua||!state.runId||sipRun!==state.runId||(sipSession&&!sipSession.isEnded())){session.terminate();return;}
     sipSession=session;phoneStatus.textContent='Входящий учебный вызов';startPhone.disabled=true;hangupPhone.textContent='Завершить разговор';
     const audio=connection=>connection.addEventListener('track',event=>{if(sipSession!==session)return;remoteAudio.srcObject=event.streams[0];remoteAudio.play().catch(()=>notify('Нажмите принять вызов для воспроизведения звука.'));});
@@ -54,6 +67,14 @@ async function connectSip(){
     if(session.connection)audio(session.connection);show('call',true);show('incident-form',false);$('accept-call').disabled=false;
   });ua.start();
 }
+async function answerIncomingSip(contactId){
+  const session=incomingSipSessions.get(String(contactId));
+  if(!session) return false;
+  if(sipSession&&!sipSession.isEnded())throw Error('Сначала завершите текущий SIP-разговор');
+  sipSession=session;sipRun=state.runId;phoneStatus.textContent='Разговор';
+  session.answer({mediaConstraints:{audio:true,video:false},pcConfig:{iceServers:sipIceServers}});remoteAudio.play().catch(()=>{});return true;
+}
+function rejectIncomingSip(contactId){const session=incomingSipSessions.get(String(contactId));if(session&&!session.isEnded())session.terminate();incomingSipSessions.delete(String(contactId));}
 connectPhone.addEventListener('click',guarded(()=>connectSip()));
 async function startTrainingCall(){
   if(sipStarting||(sipSession&&!sipSession.isEnded()))throw Error('Звонок уже готовится или идёт');

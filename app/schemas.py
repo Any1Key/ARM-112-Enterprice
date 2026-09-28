@@ -74,6 +74,7 @@ class LessonIn(BaseModel):
     scenario_ids: list[int] = Field(min_length=1,max_length=100)
     student_ids: list[int] = Field(min_length=1,max_length=100)
     service_code: str = Field(default='TERRITORY',min_length=1,max_length=100)
+    incoming_config: dict = Field(default_factory=dict)
 
 class LessonTemplateIn(LessonIn):
     student_ids:list[int]=Field(default_factory=list,max_length=100)

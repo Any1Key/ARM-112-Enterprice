@@ -8,7 +8,7 @@ from fastapi import Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from pydantic import BaseModel,Field,ValidationError
 from sqlalchemy import select
-from app.models import SessionRun,RunContext,IncidentType,ClassifierVersion,CardEvent,OperatorPresence,TrainingMessage,TrainingIssue,Scenario,User,Audit
+from app.models import SessionRun,RunContext,IncidentType,ClassifierVersion,CardEvent,OperatorPresence,TrainingMessage,IncomingContact,TrainingIssue,Scenario,User,Audit
 from app.schemas import CardIn,SupplementIn
 from app.classifier import SERVICE_NAMES
 from app.workflows import get_run,ensure_writable,run_payload,now,aware,log,begin_run,check_scenario_access
@@ -33,6 +33,10 @@ class IncomingSmsIn(SmsIn):
     aon:str=Field(min_length=1,max_length=100)
     latitude:float|None=Field(default=None,ge=-90,le=90)
     longitude:float|None=Field(default=None,ge=-180,le=180)
+class IncomingCallIn(IncomingSmsIn):
+    # При отложенной постановке SIP-звонок начинается только после выбора
+    # обращения студентом в очереди.
+    deferred:bool=False
 
 catalog_cache=OrderedDict()
 catalog_lock=threading.RLock()
@@ -180,31 +184,112 @@ def register_extensions(app,db,current):
         previous=s.scalar(select(TrainingMessage).where(TrainingMessage.student_id==student.id,TrainingMessage.aon==x.aon,TrainingMessage.run_id.is_not(None)).order_by(TrainingMessage.id.desc()))
         run=s.get(SessionRun,previous.run_id) if previous else None
         row=TrainingMessage(student_id=student.id,teacher_id=u.id,scenario_id=scenario.id,aon=x.aon,text=x.text,coordinates=coordinates,run_id=run.id if run and not run.finished_at else None);s.add(row);s.flush()
-        if row.run_id:event(s,u,run,'sms.incoming',{'message_id':row.id,'text':row.text,'aon':row.aon})
+        if row.run_id:
+            event(s,u,run,'sms.incoming',{'message_id':row.id,'text':row.text,'aon':row.aon})
+        else:
+            contact=IncomingContact(student_id=student.id,teacher_id=u.id,scenario_id=scenario.id,kind='sms',status='pending',aon=x.aon,text=x.text,coordinates=coordinates)
+            s.add(contact);s.flush()
         log(s,u,'sms.enqueue',{'message_id':row.id,'student_id':student.id});s.commit();return {'id':row.id,'run_id':row.run_id}
+
+    @app.post('/api/calls/incoming')
+    def enqueue_call(x:IncomingCallIn,u=Depends(current),s=Depends(db)):
+        if u.role not in ('teacher','admin'):raise HTTPException(403)
+        student=s.get(User,x.student_id);scenario=s.get(Scenario,x.scenario_id)
+        if not student or student.role!='student' or not scenario or (u.role=='teacher' and scenario.created_by!=u.id):raise HTTPException(404)
+        check_scenario_access(s,student,scenario,explicit_sms=True)
+        coordinates={k:getattr(x,k) for k in ('latitude','longitude') if getattr(x,k) is not None}
+        coordinates['_deferred_call']=x.deferred
+        contact=IncomingContact(student_id=student.id,teacher_id=u.id,scenario_id=scenario.id,kind='call',status='pending',aon=x.aon,text=x.text,coordinates=coordinates)
+        s.add(contact);s.flush();log(s,u,'call.enqueue',{'contact_id':contact.id,'student_id':student.id});s.commit()
+        if not x.deferred:
+            try:
+                from app.telephony import originate_incoming
+                from app.main import SessionLocal
+                originate_incoming(SessionLocal,contact.id,student.id,contact.text,contact.aon)
+            except (OSError,ConnectionError):
+                pass
+        return {'id':contact.id,'run_id':None}
+
+    @app.get('/api/incoming/queue')
+    def incoming_queue(u=Depends(current),s=Depends(db)):
+        if u.role!='student':raise HTTPException(403)
+        row=presence(s,u)
+        if row.state!='available' or (row.available_after and aware(row.available_after)>now()):return []
+        return [{'id':c.id,'kind':c.kind,'aon':c.aon,'text':c.text,'at':c.created_at,'scenario_id':c.scenario_id,'parent_run_id':c.parent_run_id}
+                for c in s.scalars(select(IncomingContact).where(IncomingContact.student_id==u.id,IncomingContact.status=='pending').order_by(IncomingContact.id))]
+
+    @app.get('/api/active-runs')
+    def active_runs(u=Depends(current),s=Depends(db)):
+        if u.role!='student':raise HTTPException(403)
+        return [run_payload(s,run,s.get(RunContext,run.id)) for run in s.scalars(
+            select(SessionRun).where(SessionRun.student_id==u.id,SessionRun.finished_at.is_(None)).order_by(SessionRun.id.desc())
+        )]
 
     @app.get('/api/sms/queue')
     def sms_queue(u=Depends(current),s=Depends(db)):
         if u.role!='student':raise HTTPException(403)
         row=presence(s,u)
-        active=s.scalar(select(SessionRun.id).where(SessionRun.student_id==u.id,SessionRun.finished_at.is_(None)))
-        if row.state!='available' or active or (row.available_after and aware(row.available_after)>now()):return []
-        return [{'id':m.id,'aon':m.aon,'text':m.text,'at':m.created_at} for m in s.scalars(select(TrainingMessage).where(TrainingMessage.student_id==u.id,TrainingMessage.run_id.is_(None)).order_by(TrainingMessage.id))]
+        if row.state!='available' or (row.available_after and aware(row.available_after)>now()):return []
+        return [{'id':c.id,'aon':c.aon,'text':c.text,'at':c.created_at,'kind':c.kind,'scenario_id':c.scenario_id}
+                for c in s.scalars(select(IncomingContact).where(IncomingContact.student_id==u.id,IncomingContact.status=='pending').order_by(IncomingContact.id))]
 
     @app.post('/api/sms/{message_id}/accept')
+    @app.post('/api/incoming/{message_id}/accept')
     def accept_sms(message_id:int,u=Depends(current),s=Depends(db)):
         if u.role!='student':raise HTTPException(403)
         s.scalar(select(User).where(User.id==u.id).with_for_update())
-        message=s.scalar(select(TrainingMessage).where(TrainingMessage.id==message_id).with_for_update())
-        if not message or message.student_id!=u.id:raise HTTPException(404)
-        if message.run_id:return run_payload(s,*get_run(s,u,message.run_id))
-        if s.scalar(select(SessionRun.id).where(SessionRun.student_id==u.id,SessionRun.finished_at.is_(None))):raise HTTPException(409,'Сначала завершите текущую карточку')
+        contact=s.scalar(select(IncomingContact).where(IncomingContact.id==message_id).with_for_update())
+        message=None
+        if contact and contact.student_id==u.id:
+            message=s.scalar(select(TrainingMessage).where(TrainingMessage.student_id==u.id,TrainingMessage.scenario_id==contact.scenario_id,TrainingMessage.aon==contact.aon,TrainingMessage.text==contact.text,TrainingMessage.run_id.is_(None)).order_by(TrainingMessage.id).with_for_update())
+        else:
+            message=s.scalar(select(TrainingMessage).where(TrainingMessage.id==message_id).with_for_update())
+            if message and message.student_id==u.id:
+                contact=s.scalar(select(IncomingContact).where(IncomingContact.student_id==u.id,IncomingContact.status=='pending',IncomingContact.scenario_id==message.scenario_id,IncomingContact.aon==message.aon,IncomingContact.text==message.text).order_by(IncomingContact.id).with_for_update())
+        if contact and contact.student_id==u.id and contact.status=='accepted' and contact.run_id:
+            return run_payload(s,*get_run(s,u,contact.run_id))
+        if not contact and (not message or message.student_id!=u.id):raise HTTPException(404)
+        if message and message.run_id:return run_payload(s,*get_run(s,u,message.run_id))
+        if not contact or contact.student_id!=u.id:raise HTTPException(404)
         row=presence(s,u)
         if row.state!='available' or (row.available_after and aware(row.available_after)>now()):raise HTTPException(409,'Оператор недоступен')
-        run,context=begin_run(s,u,s.get(Scenario,message.scenario_id));run.answers={**run.answers,'aon':message.aon,'description':message.text,'channel':'SMS',**message.coordinates}
-        for item in s.scalars(select(TrainingMessage).where(TrainingMessage.student_id==u.id,TrainingMessage.aon==message.aon,TrainingMessage.run_id.is_(None)).with_for_update()):
+        active=s.scalar(select(SessionRun).where(SessionRun.student_id==u.id,SessionRun.finished_at.is_(None)).order_by(SessionRun.id.desc()))
+        if contact and active and not contact.parent_run_id:contact.parent_run_id=active.id
+        source=message or contact
+        run,context=begin_run(s,u,s.get(Scenario,source.scenario_id));run.answers={**run.answers,'aon':source.aon,'description':source.text,'channel':'Учебный входящий звонок' if contact.kind=='call' else 'SMS',**source.coordinates}
+        for item in s.scalars(select(TrainingMessage).where(TrainingMessage.student_id==u.id,TrainingMessage.aon==source.aon,TrainingMessage.run_id.is_(None)).with_for_update()):
             item.run_id=run.id;event(s,u,run,'sms.incoming',{'message_id':item.id,'text':item.text,'aon':item.aon})
-        snapshot_update(context,sms_card=True);s.commit();return run_payload(s,run,context)
+        if contact:
+            contact.status='accepted';contact.run_id=run.id;contact.handled_at=now();contact.handled_by=u.id
+        snapshot_update(context,sms_card=True,parent_run_id=contact.parent_run_id if contact else None)
+        deferred_call=bool(contact and contact.kind=='call' and (contact.coordinates or {}).get('_deferred_call'))
+        s.commit()
+        if deferred_call:
+            try:
+                from app.telephony import originate_incoming
+                from app.main import SessionLocal
+                originate_incoming(SessionLocal,contact.id,u.id,contact.text,contact.aon)
+            except (OSError,ConnectionError):
+                pass
+        return run_payload(s,run,context)
+
+    @app.post('/api/incoming/{contact_id}/defer')
+    def defer_incoming(contact_id:int,u=Depends(current),s=Depends(db)):
+        if u.role!='student':raise HTTPException(403)
+        contact=s.scalar(select(IncomingContact).where(IncomingContact.id==contact_id,IncomingContact.student_id==u.id).with_for_update())
+        if not contact:raise HTTPException(404)
+        if contact.status=='pending':
+            contact.status='deferred';contact.handled_at=now();contact.handled_by=u.id;s.commit()
+        return {'status':contact.status}
+
+    @app.post('/api/incoming/{contact_id}/reject')
+    def reject_incoming(contact_id:int,u=Depends(current),s=Depends(db)):
+        if u.role!='student':raise HTTPException(403)
+        contact=s.scalar(select(IncomingContact).where(IncomingContact.id==contact_id,IncomingContact.student_id==u.id).with_for_update())
+        if not contact:raise HTTPException(404)
+        if contact.status=='pending':
+            contact.status='rejected';contact.handled_at=now();contact.handled_by=u.id;s.commit()
+        return {'status':contact.status}
 
     @app.get('/api/runs/{run_id}/sms')
     def messages(run_id:int,u=Depends(current),s=Depends(db)):

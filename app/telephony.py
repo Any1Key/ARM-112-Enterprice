@@ -124,8 +124,61 @@ qualify_frequency=30
     temp=root/'users.conf.tmp';temp.write_text(text);temp.chmod(0o600);temp.replace(root/'users.conf')
     ami_action('Command',Command='pjsip reload')
 
+def sync_dispatch_permissions(session_factory):
+    """Publish active DDS service permissions for the physical SIP dialplan."""
+    root=Path(os.getenv('SIP_PROVISION_ROOT','/provision'));root.mkdir(exist_ok=True)
+    allowed=set()
+    with session_factory() as s:
+        for run in s.scalars(select(SessionRun).where(SessionRun.finished_at.is_(None))):
+            context=s.get(RunContext,run.id)
+            if not context or context.scenario_snapshot.get('mode')!='dispatch':continue
+            services=(run.answers or {}).get('services',[])
+            for extension in DISPATCH_EXTENSIONS.intersection(str(code) for code in services):
+                allowed.add(f'dispatch-{run.student_id}-{extension}.allow')
+    for path in root.glob('dispatch-*.allow'):
+        if path.name not in allowed:
+            try:path.unlink()
+            except FileNotFoundError:pass
+    for name in allowed:
+        path=root/name
+        if not path.exists():path.write_text('active DDS assignment\n')
+
+def start_dispatch_permission_sync(session_factory):
+    def worker_loop():
+        while True:
+            try:sync_dispatch_permissions(session_factory)
+            except Exception:pass
+            time.sleep(1)
+    launch_worker(worker_loop,())
+
 def launch_worker(target,args):
     threading.Thread(target=target,args=args,daemon=True).start()
+
+def originate_incoming(session_factory,contact_id,student_id,text,aon):
+    """Ring the student's first registered SIP device for a queued contact."""
+    launch_worker(_incoming_worker,(session_factory,contact_id,student_id,text,aon))
+
+def _incoming_worker(session_factory,contact_id,student_id,text,aon):
+    try:
+        speech=prepare_speech(text)
+        with session_factory() as session:
+            account=session.get(SipAccount,student_id)
+            if not account:return
+            endpoint=None
+            for candidate in (account.username,account.username+'-hw'):
+                try:
+                    if phone_registered(candidate):
+                        endpoint=candidate;break
+                except (OSError,ConnectionError):
+                    return
+        if not endpoint:return
+        display_aon=str(aon or '112').split(' · ',1)[0]
+        ami_action('Originate',Channel='PJSIP/'+endpoint,Context='training-incoming',Exten='s',Priority=1,
+                   CallerID=f'Учебный звонок #{contact_id} <{display_aon}>',Timeout=30000,Async='true',
+                   Variable=f'ARM_SOUND={speech["key"]},ARM_CONTACT_ID={contact_id},ARM_CALL_ID=incoming-{contact_id}')
+    except (OSError,ConnectionError,httpx.HTTPError,ValueError):
+        # The contact remains in the application queue and can still be accepted there.
+        return
 
 def prepare_speech(text,caller_name=''):
     with httpx.Client(timeout=httpx.Timeout(60,connect=5),trust_env=False) as client:
@@ -282,6 +335,13 @@ def register_telephony(app,db,current,session_factory):
                   '103':'Скорая помощь. Учебный диспетчер. Где находится пациент? Он в сознании? Дышит?',
                   '104':'Аварийная газовая служба. Учебный диспетчер. Сообщите адрес, где ощущается запах газа и есть ли угроза людям.'}
         if u.role!='student' or extension not in messages:raise HTTPException(403)
+        active=any(
+            context and context.scenario_snapshot.get('mode')=='dispatch' and
+            extension in set(str(code) for code in (run.answers or {}).get('services',[]))
+            for run in s.scalars(select(SessionRun).where(SessionRun.student_id==u.id,SessionRun.finished_at.is_(None)))
+            for context in [s.get(RunContext,run.id)]
+        )
+        if not active:raise HTTPException(403,'Звонки в учебные службы доступны только по активному заданию ДДС и службам этой карточки')
         try:
             with httpx.Client(timeout=60,trust_env=False) as client:
                 response=client.post(os.getenv('VOICE_URL','http://voice:8092')+'/speech',json={'text':messages[extension],'caller_name':'Диспетчер Алексей'});response.raise_for_status();key=response.json()['key']
@@ -295,6 +355,9 @@ def register_telephony(app,db,current,session_factory):
         run,context=permitted(s,u,run_id);ensure_writable(run,context,s)
         if u.role!='student' or run.student_id!=u.id:raise HTTPException(403)
         if extension not in ('101','102','103','104','900'):raise HTTPException(422,'Перевод разрешён только внутри учебного контура')
+        if extension in DISPATCH_EXTENSIONS:
+            if context.scenario_snapshot.get('mode')!='dispatch' or extension not in set(str(code) for code in (run.answers or {}).get('services',[])):
+                raise HTTPException(403,'Эта учебная служба не разрешена текущим заданием ДДС')
         active=s.scalar(select(VoipCall).where(VoipCall.run_id==run.id,VoipCall.state=='answered'))
         if not active or not active.channel:raise HTTPException(409,'Нет активного SIP-разговора')
         try:ami_action('Redirect',Channel=active.channel,Context='training',Exten=extension,Priority='1')

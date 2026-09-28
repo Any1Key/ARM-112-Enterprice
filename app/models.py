@@ -80,6 +80,7 @@ class Lesson(Base):
     scenario_ids:Mapped[list]=mapped_column(JSON)
     student_ids:Mapped[list]=mapped_column(JSON)
     service_code:Mapped[str]
+    incoming_config:Mapped[dict]=mapped_column(JSON,default=dict)
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
     started_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True)
 class RunContext(Base):
@@ -166,6 +167,24 @@ class TrainingMessage(Base):
     run_id:Mapped[int|None]=mapped_column(nullable=True,index=True)
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
     read:Mapped[bool]=mapped_column(default=False)
+
+class IncomingContact(Base):
+    """A queued incoming call or message, separate from the card it may create."""
+    __tablename__='incoming_contacts'
+    id:Mapped[int]=mapped_column(primary_key=True)
+    student_id:Mapped[int]=mapped_column(index=True)
+    teacher_id:Mapped[int]=mapped_column(index=True)
+    scenario_id:Mapped[int]=mapped_column(ForeignKey('scenarios.id'))
+    kind:Mapped[str]=mapped_column(String(16),default='sms')
+    status:Mapped[str]=mapped_column(String(16),default='pending',index=True)
+    aon:Mapped[str]=mapped_column(String(100))
+    text:Mapped[str]=mapped_column(Text)
+    coordinates:Mapped[dict]=mapped_column(JSON,default=dict)
+    run_id:Mapped[int|None]=mapped_column(nullable=True,index=True)
+    parent_run_id:Mapped[int|None]=mapped_column(nullable=True,index=True)
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
+    handled_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True)
+    handled_by:Mapped[int|None]=mapped_column(nullable=True)
 
 class TrainingIssue(Base):
     __tablename__='training_issues'

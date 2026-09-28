@@ -10,6 +10,7 @@ from sqlalchemy import select, func, or_, and_, cast, String
 from sqlalchemy.orm import Session
 from app.models import (User, Scenario, SessionRun, Audit, ClassifierVersion, IncidentType,
                         ScenarioSettings, Material, Lesson, RunContext, CardEvent, ExpertReview, AccountState, AiJob, SipAccount, VoipCall, CardAttachment, TrainingMessage)
+from app.models import IncomingContact
 from app.schemas import (CardIn, DraftIn, ResolveIn, SettingsIn, LessonIn, LessonTemplateIn, TemplateAssignmentIn, StatusIn,
                          WorkCallIn, DdsErrorIn, ReviewIn, UserIn, UserUpdateIn)
 from app.classifier import active_workbook, parse_workbook, resolve_rules, FLAGS, SERVICE_NAMES
@@ -381,6 +382,38 @@ def begin_run(s,u,scenario,lesson=None):
     log(s,u,'run.start',{'run_id':run.id,'lesson_id':lesson.id if lesson else None})
     s.commit();return run,context
 
+def enqueue_lesson_incoming(s,u,lesson):
+    """Create a lesson's incoming batch once, when the student starts its first task."""
+    config=lesson.incoming_config or {}
+    if not config.get('enabled') or u.id in set(config.get('started_for',[])):
+        return
+    scenario_ids=[int(identifier) for identifier in config.get('scenario_ids',lesson.scenario_ids)
+                  if int(identifier) in set(lesson.scenario_ids)]
+    if not scenario_ids:return
+    amount=max(1,min(50,int(config.get('count',1))))
+    kind=config.get('kind','call') if config.get('kind') in ('call','sms') else 'call'
+    mode=config.get('mode','on_demand') if config.get('mode') in ('on_demand','immediate') else 'on_demand'
+    aon=str(config.get('aon') or '+7 921 555 18 42')
+    scenarios={item.id:item for item in s.scalars(select(Scenario).where(Scenario.id.in_(scenario_ids)))}
+    contacts=[]
+    for index in range(amount):
+        scenario=scenarios.get(scenario_ids[index%len(scenario_ids)])
+        if not scenario:continue
+        coordinates={'_lesson_id':lesson.id,'_lesson_batch':True,'_deferred_call':kind=='call' and mode=='on_demand'}
+        contacts.append(IncomingContact(student_id=u.id,teacher_id=lesson.teacher_id,scenario_id=scenario.id,
+                        kind=kind,status='pending',aon=aon,
+                        text=scenario.caller_text,coordinates=coordinates))
+    s.add_all(contacts)
+    lesson.incoming_config={**config,'started_for':list(set(config.get('started_for',[]))|{u.id})}
+    s.commit()
+    if kind=='call' and mode=='immediate':
+        try:
+            from app.telephony import originate_incoming
+            from app.main import SessionLocal
+            for contact in contacts:originate_incoming(SessionLocal,contact.id,u.id,contact.text,contact.aon)
+        except (OSError,ConnectionError):
+            pass
+
 def finalize_run(s,u,run,context,card,evaluate,commit=True):
     snapshot=context.scenario_snapshot if context else None
     scenario=Scenario(**{key:snapshot[key] for key in ('title','category','caller_text','expected')}) if snapshot else s.get(Scenario,run.scenario_id)
@@ -592,6 +625,14 @@ def register_routes(app,db,current,evaluate,pwd):
         x.title=x.title.strip()
         if not x.title:raise HTTPException(422,'Введите название занятия')
         x.scenario_ids=list(dict.fromkeys(x.scenario_ids));x.student_ids=list(dict.fromkeys(x.student_ids))
+        incoming=x.incoming_config or {}
+        if incoming.get('enabled'):
+            selected=list(dict.fromkeys(int(identifier) for identifier in incoming.get('scenario_ids',x.scenario_ids)))
+            if not selected or any(identifier not in x.scenario_ids for identifier in selected):
+                raise HTTPException(422,'Входящие обращения должны использовать задания этого занятия')
+            incoming={**incoming,'scenario_ids':selected,'count':max(1,min(50,int(incoming.get('count',1)))),'started_for':[]}
+            x.incoming_config=incoming
+        else:x.incoming_config={}
         if x.mode=='call':x.service_code='TERRITORY'
         for identifier in set(x.scenario_ids):
             scenario=s.get(Scenario,identifier)
@@ -626,7 +667,7 @@ def register_routes(app,db,current,evaluate,pwd):
     @app.get('/api/lesson-templates')
     def lesson_templates(u=Depends(current),s=Depends(db)):
         assert_teacher(u)
-        return [{'id':x.id,'title':x.title,'status':x.status,'mode':x.mode,'scenario_ids':x.scenario_ids,'student_ids':x.student_ids,'service_code':x.service_code,'require_sip':x.require_sip}
+        return [{'id':x.id,'title':x.title,'status':x.status,'mode':x.mode,'scenario_ids':x.scenario_ids,'student_ids':x.student_ids,'service_code':x.service_code,'require_sip':x.require_sip,'incoming_config':x.incoming_config or {}}
                 for x in s.scalars(select(Lesson).where(Lesson.teacher_id==u.id,Lesson.status=='template').order_by(Lesson.id.desc()))]
 
     @app.post('/api/lesson-templates')
@@ -651,7 +692,7 @@ def register_routes(app,db,current,evaluate,pwd):
         template=s.get(Lesson,template_id)
         if not template or template.status!='template':raise HTTPException(404,'Заготовка не найдена')
         if template.teacher_id!=u.id:raise HTTPException(403)
-        payload=LessonIn(title=x.title or template.title,mode=template.mode,scenario_ids=list(template.scenario_ids),student_ids=x.student_ids,service_code=template.service_code,require_sip=template.require_sip)
+        payload=LessonIn(title=x.title or template.title,mode=template.mode,scenario_ids=list(template.scenario_ids),student_ids=x.student_ids,service_code=template.service_code,require_sip=template.require_sip,incoming_config=template.incoming_config or {})
         validate_lesson(payload,u,s)
         lesson=Lesson(**payload.model_dump(),teacher_id=u.id);s.add(lesson);s.flush()
         log(s,u,'lesson.template.assign',{'template_id':template.id,'lesson_id':lesson.id});s.commit();return {'id':lesson.id}
@@ -665,7 +706,7 @@ def register_routes(app,db,current,evaluate,pwd):
             if u.role=='student' and u.id not in lesson.student_ids: continue
             rows.append({'id':lesson.id,'title':lesson.title,'status':lesson.status,'mode':lesson.mode,
                          'scenario_ids':lesson.scenario_ids,'student_ids':lesson.student_ids if u.role!='student' else [u.id],
-                         'service_code':lesson.service_code,'require_sip':lesson.require_sip,**(lesson_progress(s,lesson,u.id) if u.role=='student' else {})})
+                         'service_code':lesson.service_code,'require_sip':lesson.require_sip,'incoming_config':lesson.incoming_config or {},**(lesson_progress(s,lesson,u.id) if u.role=='student' else {})})
         return rows
 
     @app.post('/api/lessons/{lesson_id}/tasks/{scenario_id}/start')
@@ -682,6 +723,7 @@ def register_routes(app,db,current,evaluate,pwd):
         task=next(item for item in lesson_progress(s,lesson,u.id)['tasks'] if item['scenario_id']==scenario_id)
         if task['status']=='completed':raise HTTPException(409,'Задание уже выполнено. Откройте его результат.')
         run,context=begin_run(s,u,s.get(Scenario,scenario_id),lesson)
+        enqueue_lesson_incoming(s,u,lesson)
         return run_payload(s,run,context)
 
     @app.post('/api/lessons/{lesson_id}/{action}')
@@ -700,7 +742,7 @@ def register_routes(app,db,current,evaluate,pwd):
             if not remaining:return {'done':True,**progress}
             import secrets
             scenario=s.get(Scenario,secrets.choice(remaining))
-            run,context=begin_run(s,u,scenario,lesson);return run_payload(s,run,context)
+            run,context=begin_run(s,u,scenario,lesson);enqueue_lesson_incoming(s,u,lesson);return run_payload(s,run,context)
         assert_teacher(u)
         if lesson.teacher_id!=u.id: raise HTTPException(403)
         if action=='start' and lesson.status=='prepared':
