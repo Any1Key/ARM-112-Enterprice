@@ -162,12 +162,11 @@ def evaluate_dds(s,run,context,elapsed):
                    'field_results':field_results,'required_services':sorted(required),'delivered_services':sorted(delivered),'handoffs':handoffs,'validation_count':len(corrections)},
             'note':'Учебная оценка ДДС: проверка исходной карточки, исправления, службы, подтверждённая передача адреса и время. Запись разговора оценивается преподавателем; автоматического распознавания речи нет.'}
 
-def evaluate_status_dds(s,run,context,elapsed):
-    """Assess only the receiving service's decisions and status history."""
+def evaluate_legacy_status_dds(s,run,context,elapsed):
+    """Keep scores of attempts started before the confirmed DDS timing rules."""
     from app.training import ACCEPTED, REJECTED, TERMINAL
     from app.workflows import history_for, aware
-    snapshot=context.scenario_snapshot
-    service=snapshot['service_code']
+    snapshot=context.scenario_snapshot;service=snapshot['service_code']
     records=history_for(events_for(s,run)).get(service,[])
     actions=[item for item in records if item['status'] not in ('Добавлена','Получена службой')]
     first=actions[0] if actions else None
@@ -178,10 +177,8 @@ def evaluate_status_dds(s,run,context,elapsed):
     commented=bool(actions and all(item.get('comment','').strip() for item in actions))
     norm=int(snapshot['expected'].get('norm_seconds',180))
     reaction=max(0,int((datetime.fromisoformat(first['at'])-aware(context.registered_at)).total_seconds())) if first else elapsed
-    parts={'Решение своей службы':35 if decision_ok else 0,
-           'Статусы реагирования':25 if decision_ok and complete else 0,
-           'Комментарии к статусам':20 if commented else 0,
-           'Время первой реакции':20 if first and reaction<=norm else 0}
+    parts={'Решение своей службы':35 if decision_ok else 0,'Статусы реагирования':25 if decision_ok and complete else 0,
+           'Комментарии к статусам':20 if commented else 0,'Время первой реакции':20 if first and reaction<=norm else 0}
     errors=[]
     if not first:errors.append('Нет решения о приёме или отказе')
     elif not decision_ok:errors.append('Решение службы не соответствует учебному сценарию')
@@ -191,7 +188,46 @@ def evaluate_status_dds(s,run,context,elapsed):
     return {'score':sum(parts.values()),'parts':parts,'parts_max':{'Решение своей службы':35,'Статусы реагирования':25,'Комментарии к статусам':20,'Время первой реакции':20},
             'elapsed_seconds':elapsed,'reaction_seconds':reaction,'norm_seconds':norm,'time_deviation_seconds':reaction-norm,'errors':errors,
             'dds':{'workflow':'status','service_code':service,'expected_decision':expected,'decision':first['status'] if first else None,'latest_status':latest,'status_history':actions},
-            'note':'Учебная оценка ДДС: решение своей службы, статусы, комментарии и время первой реакции. Контакты с заявителем и бригадой преподаватель оценивает по журналу действий; поля карточки 112 не проверяются.'}
+            'note':'Историческая учебная оценка ДДС по правилам, действовавшим при запуске попытки.'}
+
+def evaluate_status_dds(s,run,context,elapsed):
+    """Assess only the receiving service's decisions and status history."""
+    if context.scenario_snapshot.get('dds_rules_version')!=2:
+        return evaluate_legacy_status_dds(s,run,context,elapsed)
+    from app.training import ACCEPTED, REJECTED, dds_status_complete
+    from app.workflows import history_for, dds_timing
+    snapshot=context.scenario_snapshot
+    service=snapshot['service_code']
+    records=history_for(events_for(s,run)).get(service,[])
+    actions=[item for item in records if item['status'] not in ('Добавлена','Получена службой')]
+    first=actions[0] if actions else None
+    expected=ACCEPTED if service in snapshot['expected']['dds_gold'].get('services',[]) else REJECTED
+    decision_ok=bool(first and first['status']==expected)
+    latest=actions[-1]['status'] if actions else None
+    statuses=[item['status'] for item in actions]
+    complete=dds_status_complete(statuses,service)
+    automatically_completed=complete and (expected==REJECTED or latest!='Отказ от выполнения работ')
+    commented=bool(actions and all(item.get('comment','').strip() for item in actions))
+    timing=dds_timing(run,context,history_for(events_for(s,run)))
+    opening=timing['opening_seconds'];reaction=timing['first_entry_seconds']
+    parts={'Решение своей службы':35 if decision_ok else 0,
+           'Статусы реагирования':25 if decision_ok and automatically_completed else 0,
+           'Комментарии к статусам':20 if commented else 0,
+           'Открытие за 30 секунд':10 if opening<=30 else 0,
+           'Первая запись за 3 минуты':10 if reaction is not None and reaction<=180 else 0}
+    errors=[]
+    if not first:errors.append('Нет решения о приёме или отказе')
+    elif not decision_ok:errors.append('Решение службы не соответствует учебному сценарию')
+    if not complete:errors.append('Работа своей службы не доведена до завершающего статуса')
+    elif latest=='Отказ от выполнения работ':errors.append('Мотивированный отказ от работ требует экспертной оценки преподавателя')
+    if not commented:errors.append('Не ко всем действиям добавлены комментарии')
+    if opening>30:errors.append('Карточка открыта позже 30 секунд после поступления')
+    if reaction is None or reaction>180:errors.append('Первая запись не внесена в течение 3 минут после поступления')
+    return {'score':sum(parts.values()),'parts':parts,'parts_max':{'Решение своей службы':35,'Статусы реагирования':25,'Комментарии к статусам':20,'Открытие за 30 секунд':10,'Первая запись за 3 минуты':10},
+            'elapsed_seconds':elapsed,'reaction_seconds':reaction,'opening_seconds':opening,'first_entry_seconds':reaction,'opening_norm_seconds':30,'norm_seconds':180,
+            'time_deviation_seconds':(reaction if reaction is not None else elapsed)-180,'errors':errors,
+            'dds':{'workflow':'status','service_code':service,'expected_decision':expected,'decision':first['status'] if first else None,'latest_status':latest,'status_history':actions},
+            'note':'Оба срока ДДС отсчитываются от поступления карточки: 30 секунд на открытие, 3 минуты на первую запись статуса и текста. Последующие работы не ограничены временем. Контакты преподаватель оценивает по журналу; поля карточки 112 не проверяются.'}
 
 
 def register_dds(app,db,current):
@@ -209,6 +245,7 @@ def register_dds(app,db,current):
     @app.post('/api/dds/exercises')
     def build(x:BuildIn,u=Depends(current),s=Depends(db)):
         assert_teacher(u)
+        if x.norm_seconds!=180:raise HTTPException(422,'Для новых карточек ДДС первая запись должна быть внесена за 3 минуты с поступления')
         from app.generation import generate_local
         version=s.scalar(select(ClassifierVersion).order_by(ClassifierVersion.id.desc()))
         types=list(s.scalars(select(IncidentType).where(IncidentType.version_id==version.id))) if version else []
@@ -264,6 +301,7 @@ def register_dds(app,db,current):
         scenario=s.get(Scenario,scenario_id)
         if not scenario:raise HTTPException(404)
         assert_editable(s,u,scenario)
+        if x.norm_seconds is not None and x.norm_seconds!=180:raise HTTPException(422,'Норматив первой записи ДДС фиксирован: 3 минуты с поступления')
         setting=s.get(ScenarioSettings,scenario_id)
         if not setting or setting.mode!='dds':raise HTTPException(422,'Не карточка проверки ДДС')
         validate_services(s,x.card)

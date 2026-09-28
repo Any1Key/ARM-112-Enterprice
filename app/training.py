@@ -8,6 +8,23 @@ REFUSED='Отказ от выполнения работ'
 NO_CREW='Работы завершены: Завершение работ без бригады'
 PROGRESS=['Начало реагирования','Прибытие','Проведение работ']
 TERMINAL={COMPLETE,REFUSED,NO_CREW}
+DDS_REQUIRED=[ACCEPTED,*PROGRESS,COMPLETE]
+
+def dds_status_options(current,service):
+    """The confirmed DDS exercise requires each work stage in order."""
+    if current in (REJECTED,COMPLETE,REFUSED,NO_CREW):return []
+    if current in ('Добавлена','Получена службой',None):return [ACCEPTED,REJECTED]
+    if current==ACCEPTED:return [PROGRESS[0],REFUSED]+([NO_CREW] if service=='103' else [])
+    if current in PROGRESS:return [DDS_REQUIRED[DDS_REQUIRED.index(current)+1],REFUSED]
+    return []
+
+def dds_status_complete(statuses,service):
+    if not statuses:return False
+    if statuses==[REJECTED]:return True
+    if statuses[0]!=ACCEPTED:return False
+    if statuses[-1]==REFUSED:return True
+    if service=='103' and statuses==[ACCEPTED,NO_CREW]:return True
+    return statuses==DDS_REQUIRED
 
 def available_statuses(current,service):
     if current in TERMINAL: return []

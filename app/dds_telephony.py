@@ -5,6 +5,7 @@ import time
 from datetime import datetime,timezone
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
+from typing import Literal
 from sqlalchemy import select
 from app.models import VoipCall, CardEvent, Audit, SipAccount, Lesson, SessionRun, RunContext
 from app.workflows import get_run, ensure_writable, events_for
@@ -12,7 +13,8 @@ from app.dds import directory
 from app.telephony import ami_action,ami_connect,read_frame,prepare_speech,phone_registered,launch_worker
 
 class CallIn(BaseModel):
-    service:str=Field(min_length=1,max_length=100)
+    service:str=Field(default='',max_length=100)
+    role:Literal['brigade','superior']|None=None
 
 
 def register_dds_telephony(app,db,current,factory):
@@ -81,22 +83,31 @@ def register_dds_telephony(app,db,current,factory):
         if u.role!='student':raise HTTPException(403)
         run,context=get_run(s,u,run_id,True);ensure_writable(run,context,s)
         if not context or context.scenario_snapshot.get('mode')!='dds':raise HTTPException(422,'Не карточка ДДС')
-        if not any(e.kind=='dds.validation' for e in events_for(s,run)):raise HTTPException(409,'Сначала сохраните проверку карточки')
-        if x.service not in run.answers['services']:raise HTTPException(422,'Служба отсутствует в проверенной карточке')
+        status_mode=context.scenario_snapshot.get('dds_workflow')=='status'
+        if status_mode:
+            if not x.role:raise HTTPException(422,'Выберите руководителя бригады или вышестоящего начальника')
+            service=context.scenario_snapshot['service_code']
+            if x.service and x.service!=service:raise HTTPException(403,'Звонок относится только к своей учебной службе')
+            name='Руководитель реагирующей бригады' if x.role=='brigade' else 'Вышестоящий начальник ДДС'
+            greeting=f'{name}. Учебная линия слушает. Сообщите обстоятельства и необходимые действия.'
+        else:
+            if not any(e.kind=='dds.validation' for e in events_for(s,run)):raise HTTPException(409,'Сначала сохраните проверку карточки')
+            if x.service not in run.answers['services']:raise HTTPException(422,'Служба отсутствует в проверенной карточке')
+            service=x.service;name=directory(s).get(service,service)
+            greeting=f'{name}. Дежурный учебной службы слушает. Передайте место происшествия, обстоятельства и необходимые меры.'
         account=s.get(SipAccount,u.id)
         if not account:raise HTTPException(409,'Подключите браузерный или аппаратный SIP-телефон')
         active=s.scalar(select(VoipCall).where(VoipCall.run_id==run.id,VoipCall.state.in_(['queued','ringing','answered'])))
         if active:raise HTTPException(409,'Завершите предыдущий звонок или отмените его')
         try:
             if not phone_registered(account.username) and not phone_registered(account.username+'-hw'):raise HTTPException(409,'SIP-телефон не зарегистрирован')
-            name=directory(s).get(x.service,x.service)
-            speech=prepare_speech(f'{name}. Дежурный учебной службы слушает. Передайте место происшествия, обстоятельства и необходимые меры.','Диспетчер Алексей')
+            speech=prepare_speech(greeting,'Диспетчер Алексей')
             call=VoipCall(run_id=run.id,state='ringing',sound_key=speech['key']);s.add(call);s.flush()
             extension='80'+str(call.id)
             ami_action('Command',Command=f'database put dds {u.id}/{extension} {speech["key"]}:{run.id}:{call.id}')
-            s.add(CardEvent(run_id=run.id,user_id=u.id,kind='dds.call.prepared',data={'call_id':call.id,'extension':extension,'service':x.service,'name':name,'direction':'outbound'}))
+            s.add(CardEvent(run_id=run.id,user_id=u.id,kind='dds.call.prepared',data={'call_id':call.id,'extension':extension,'service':service,'name':name,'role':x.role if status_mode else None,'direction':'outbound'}))
             s.add(CardEvent(run_id=run.id,user_id=u.id,kind='sip.audio_ready',data={'call_id':call.id,'voice':speech.get('voice'),'engine':speech.get('engine'),'cached':speech.get('cached',False),'preparation_ms':0}))
-            s.add(Audit(user_id=u.id,action='dds.call.prepared',details={'run_id':run.id,'call_id':call.id,'service':x.service}));s.commit()
+            s.add(Audit(user_id=u.id,action='dds.call.prepared',details={'run_id':run.id,'call_id':call.id,'service':service,'role':x.role if status_mode else None}));s.commit()
         except HTTPException:raise
         except Exception as exc:
             s.rollback();raise HTTPException(503,'Учебная SIP-служба недоступна. Проверьте подключение телефонии.') from exc
@@ -106,4 +117,4 @@ def register_dds_telephony(app,db,current,factory):
             raise HTTPException(503,'Не удалось подготовить SIP-вызов')
         s.refresh(call)
         if call.state=='failed':raise HTTPException(503,'Asterisk недоступен')
-        return {'call_id':call.id,'extension':extension,'service':x.service,'name':name,'training':True}
+        return {'call_id':call.id,'extension':extension,'service':service,'name':name,'role':x.role if status_mode else None,'training':True}

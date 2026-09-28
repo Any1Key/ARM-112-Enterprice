@@ -310,6 +310,13 @@ def finish(run_id:int,x:FinishIn,u=Depends(current),s:Session=Depends(db)):
     if not r or r.student_id!=u.id: raise HTTPException(404)
     if r.finished_at is not None: return r.report
     context=s.get(RunContext,run_id);ensure_writable(r,context,s)
+    if context and context.scenario_snapshot.get('dds_rules_version')==2:
+        from app.workflows import history_for, events_for
+        from app.training import dds_status_complete
+        own=history_for(events_for(s,r)).get(context.scenario_snapshot['service_code'],[])
+        statuses=[item['status'] for item in own if item['status'] not in ('Добавлена','Получена службой')]
+        if not dds_status_complete(statuses,context.scenario_snapshot['service_code']):
+            raise HTTPException(409,'Заполните все обязательные статусы своей службы либо оформите мотивированный отказ')
     if context and context.registered_at and context.scenario_snapshot.get('mode')!='dispatch':
         x=FinishIn.model_validate(r.answers)
     return finalize_run(s,u,r,context,x,evaluate)

@@ -100,6 +100,13 @@ class WorkCallIn(BaseModel):
         if not any(str(v).strip() for v in self.model_dump().values()): raise ValueError('Заполните хотя бы одно поле отработки')
         return self
 
+class DdsErrorIn(BaseModel):
+    field: str = Field(min_length=1,max_length=200)
+    corrected_information: str = Field(min_length=1,max_length=2000)
+    source: str = Field(min_length=1,max_length=500)
+    reported_to: str = Field(min_length=1,max_length=200)
+    report_channel: str = Field(default='Обычный телефон',min_length=1,max_length=100)
+
 class SupplementIn(BaseModel):
     revision: int = Field(ge=0)
     fields: dict = Field(max_length=30)

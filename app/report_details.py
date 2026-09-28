@@ -42,6 +42,7 @@ def register_report_details(app,db,current):
                            'resume_count':sum(e.kind=='card.resume' for e in events)},
                 'calls':[{'id':c.id,'direction':'outbound' if c.id in prepared else 'inbound',
                           'service':prepared.get(c.id,{}).get('service'), 'service_name':prepared.get(c.id,{}).get('name') or service_names.get(prepared.get(c.id,{}).get('service')),
+                          'role':prepared.get(c.id,{}).get('role'),
                           'extension':prepared.get(c.id,{}).get('extension'), 'handoffs':handoffs[c.id], 'state':c.state,'created_at':aware(c.created_at),'answered_at':aware(c.answered_at),
                           'ended_at':aware(c.ended_at),'error':c.error,'audio':audio.get(c.id),
                           'waiting_seconds':max(0,round((c.answered_at-c.created_at).total_seconds(),2)) if c.answered_at else None,
@@ -49,7 +50,9 @@ def register_report_details(app,db,current):
                           'recording_available':c.id in files and c.state not in ('queued','ringing','answered')} for c in calls],
                 'recording_available':bool(files and not any(c.state in ('queued','ringing','answered') for c in calls))}
         # Active students can see their own evidence, but never the scenario answer key.
-        if u.role in ('teacher','admin'):
+        if u.role in ('teacher','admin') and snapshot.get('dds_workflow')=='status':
+            result['caller_text']=snapshot.get('caller_text',scenario.caller_text if scenario else '')
+        elif u.role in ('teacher','admin'):
             if snapshot.get('mode')=='dds':result['dds_reference_card']=expected.get('dds_gold')
             card=run.answers or {}
             comparisons=[]

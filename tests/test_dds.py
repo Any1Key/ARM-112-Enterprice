@@ -4,6 +4,7 @@ from sqlalchemy import select
 from test_health import client,auth
 from app.dds import damage, changed_fields, received_card
 from app.models import Scenario,ScenarioSettings,SessionRun,RunContext,CardEvent,Lesson,User,VoipCall
+from app.training import dds_status_options,dds_status_complete
 
 
 def build(client,teacher,variants=None,source='generated',count=1):
@@ -28,6 +29,12 @@ def validation(client,student,run,card,verdict='corrected'):
     return client.put(f'/api/dds/runs/{run["run_id"]}/validation',headers=student,json={'revision':run['revision'],'card':card,'verdict':verdict,'findings':'Исправлены сведения по обращению заявителя' if verdict!='correct' else '', 'comment':'Сообщение принято, проверено, информация передана дежурным службам'})
 
 
+def complete_dds(client,student,run):
+    for name in ('Начало реагирования','Прибытие','Проведение работ','Работы завершены'):
+        response=client.post(f'/api/runs/{run["run_id"]}/status',headers=student,json={'service_code':run['service_code'],'status':name,'comment':'Этап отработан, сведения внесены'})
+        assert response.status_code==200,response.text
+
+
 @pytest.mark.parametrize('variant,fields',[('clean',set()),('typos',{'description'}),('data',{'address'}),('services',{'services'}),('mixed',{'description','address','services'})])
 def test_damage_is_bounded_and_clean_reference_unchanged(variant,fields):
     gold={'description':'Обнаружено задымление квартиры.','address':'город Москва, улица Лесная, дом 26','services':['101'],'caller_name':'Иванов Алексей'}
@@ -48,6 +55,31 @@ def test_school_fire_in_shchukino_routes_by_district_and_subordination(client):
         assert {'101','102','103','DDS_EDUCATION_MOSCOW','DDS_SHCHUKINO','DDS_SZAO'}<=set(result['services'])
         other=resolved_card(s,CardIn(**{**base,'district':'Другой район'}))
         assert 'DDS_SHCHUKINO' not in other['services']
+
+
+def test_dds_requires_each_status_and_has_explicit_terminal_exceptions():
+    assert dds_status_options('Получена службой','101')==['Принята','Не принята']
+    assert 'Прибытие' not in dds_status_options('Принята','101')
+    assert dds_status_complete(['Не принята'],'101')
+    assert not dds_status_complete(['Принята','Работы завершены'],'101')
+    assert dds_status_complete(['Принята','Начало реагирования','Прибытие','Проведение работ','Работы завершены'],'101')
+    assert dds_status_complete(['Принята','Работы завершены: Завершение работ без бригады'],'103')
+    assert not dds_status_complete(['Принята','Работы завершены: Завершение работ без бригады'],'101')
+
+
+def test_dds_attempt_started_before_rule_change_keeps_original_transitions(client):
+    from app.main import SessionLocal
+    teacher,student=auth(client,'teacher'),auth(client,'student')
+    scenario=build(client,teacher)[0];_,run=lesson(client,teacher,student,[scenario]);id=run['run_id']
+    with SessionLocal() as s:
+        context=s.get(RunContext,id);snapshot=dict(context.scenario_snapshot);snapshot.pop('dds_rules_version',None)
+        context.scenario_snapshot=snapshot;s.commit()
+    for status in ('Принята','Работы завершены'):
+        response=client.post(f'/api/runs/{id}/status',headers=student,json={'service_code':run['service_code'],'status':status,'comment':'Этап выполнен'})
+        assert response.status_code==200,response.text
+    response=client.post(f'/api/runs/{id}/finish',headers=student,json={})
+    assert response.status_code==200,response.text
+    assert 'Время первой реакции' in response.json()['parts']
 
 
 def test_dds_full_cycle_uses_own_service_statuses_and_read_only_card(client):
@@ -71,6 +103,8 @@ def test_dds_full_cycle_uses_own_service_statuses_and_read_only_card(client):
     assert client.post(f'/api/runs/{id}/status',headers=student,json={'service_code':'не своя','status':'Принята','comment':'Нет'}).status_code==403
     status=lambda name,comment:client.post(f'/api/runs/{id}/status',headers=student,json={'service_code':run['service_code'],'status':name,'comment':comment})
     assert status('Принята','Сообщение принято').status_code==200
+    assert status('Прибытие','Бригада прибыла').status_code==409
+    assert client.post(f'/api/runs/{id}/finish',headers=student,json={}).status_code==409
     contact=client.post(f'/api/runs/{id}/work-call',headers=student,json={'destination':'Заявитель','phone':gold['caller_phone'],'message':'Уточнены обстоятельства обращения'})
     assert contact.status_code==200,contact.text
     others=[code for code in run['card']['services'] if code!=run['service_code']]
@@ -78,7 +112,7 @@ def test_dds_full_cycle_uses_own_service_statuses_and_read_only_card(client):
         contact={'destination':'Другая служба','service':others[0],'message':'Согласованы действия'}
         assert client.post(f'/api/runs/{id}/work-call',headers=student,json=contact).status_code==422
         assert client.post(f'/api/runs/{id}/work-call',headers=student,json={**contact,'phone':'+7 495 000 00 00'}).status_code==422
-    assert status('Работы завершены','Бригада завершила реагирование').status_code==200
+    complete_dds(client,student,run)
     report=client.post(f'/api/runs/{id}/finish',headers=student,json={}).json()
     assert report['score']==100,report
     assert report['dds']['workflow']=='status' and report['dds']['decision']=='Принята'
@@ -101,9 +135,74 @@ def test_dds_card_cannot_be_corrected(client):
     _,run=lesson(client,teacher,student,[scenario]);id=run['run_id']
     bad=deepcopy(gold);bad['address']='Выдуманный адрес'
     response=validation(client,student,run,bad);assert response.status_code==409,response.text
-    report=client.post(f'/api/runs/{id}/finish',headers=student,json={}).json()
-    assert report['score']==0 and report['parts']['Решение своей службы']==0
+    assert client.post(f'/api/runs/{id}/finish',headers=student,json={}).status_code==409
     assert client.get(f'/api/runs/{id}',headers=student).json()['card']['address']==gold['address']
+    assert client.post(f'/api/runs/{id}/status',headers=student,json={'service_code':run['service_code'],'status':'Не принята','comment':'Не относится к нашей службе'}).status_code==200
+    report=client.post(f'/api/runs/{id}/finish',headers=student,json={}).json()
+    assert report['parts']['Решение своей службы']==0
+    assert client.get(f'/api/runs/{id}',headers=student).json()['card']['address']==gold['address']
+
+
+def test_dds_error_report_notifies_112_without_changing_received_card(client):
+    teacher,student=auth(client,'teacher'),auth(client,'student')
+    scenario=build(client,teacher)[0];_,run=lesson(client,teacher,student,[scenario]);id=run['run_id']
+    original=deepcopy(run['card'])
+    payload={'field':'Адрес','corrected_information':'Дом 12 вместо дома 21','source':'Доклад руководителя бригады',
+             'reported_to':'Оператор 112 Иванов','report_channel':'Обычный телефон'}
+    assert client.post(f'/api/runs/{id}/dds-error',headers=student,json={**payload,'reported_to':''}).status_code==422
+    response=client.post(f'/api/runs/{id}/dds-error',headers=student,json=payload)
+    assert response.status_code==200,response.text
+    assert response.json()['card']==original
+    report=client.get(f'/api/reports/{id}',headers=teacher).json()
+    assert any(event['kind']=='dds.error_report' and event['data']['corrected_information']==payload['corrected_information'] for event in report['events'])
+    assert client.post(f'/api/dds/runs/{id}/sip-call',headers=student,json={}).status_code==422
+    assert client.post(f'/api/dds/runs/{id}/sip-call',headers=student,json={'role':'brigade'}).status_code==409
+
+
+def test_dds_softphone_prepares_brigade_and_superior_roles(client,monkeypatch):
+    from app.main import SessionLocal
+    from app.models import SipAccount
+    from app import dds_telephony
+    teacher,student=auth(client,'teacher'),auth(client,'student')
+    scenario=build(client,teacher)[0];_,run=lesson(client,teacher,student,[scenario]);id=run['run_id']
+    with SessionLocal() as s:
+        s.add(SipAccount(user_id=3,username='arm3',password='test-secret'));s.commit()
+    greetings=[]
+    monkeypatch.setattr(dds_telephony,'phone_registered',lambda name:True)
+    monkeypatch.setattr(dds_telephony,'prepare_speech',lambda text,name:greetings.append(text) or {'key':'a'*64,'voice':'test','engine':'test','cached':True})
+    monkeypatch.setattr(dds_telephony,'ami_action',lambda *args,**kwargs:{'Response':'Success'})
+    monkeypatch.setattr(dds_telephony,'launch_worker',lambda target,args:args[-1].set())
+    first=client.post(f'/api/dds/runs/{id}/sip-call',headers=student,json={'role':'brigade'})
+    assert first.status_code==200,first.text
+    assert first.json()['role']=='brigade' and 'Руководитель' in greetings[-1]
+    calls=client.get(f'/api/reports/{id}',headers=teacher).json()['calls']
+    assert calls[0]['role']=='brigade' and calls[0]['service']==run['service_code']
+    assert client.post(f'/api/dds/runs/{id}/sip-call',headers=student,json={'role':'superior'}).status_code==409
+    assert client.post(f'/api/telephony/runs/{id}/call/cancel',headers=student).status_code==200
+    second=client.post(f'/api/dds/runs/{id}/sip-call',headers=student,json={'role':'superior'})
+    assert second.status_code==200,second.text
+    assert second.json()['role']=='superior' and 'Вышестоящий начальник' in greetings[-1]
+
+
+def test_dds_opening_and_first_entry_deadlines_are_independent(client):
+    from app.main import SessionLocal
+    from app.workflows import events_for
+    from datetime import datetime,timedelta
+    teacher,student=auth(client,'teacher'),auth(client,'student')
+    scenario=build(client,teacher)[0];_,run=lesson(client,teacher,student,[scenario]);id=run['run_id']
+    with SessionLocal() as s:
+        context=s.get(RunContext,id);received=s.get(SessionRun,id).started_at-timedelta(seconds=10)
+        context.scenario_snapshot={**context.scenario_snapshot,'queue_started_at':received.isoformat()};s.commit()
+    response=client.post(f'/api/runs/{id}/status',headers=student,json={'service_code':run['service_code'],'status':'Принята','comment':'Принято'})
+    assert response.status_code==200,response.text
+    with SessionLocal() as s:
+        event=next(event for event in events_for(s,s.get(SessionRun,id)) if event.kind=='service.status' and event.data['status']=='Принята')
+        event.at=received+timedelta(seconds=181);s.commit()
+    complete_dds(client,student,run)
+    report=client.post(f'/api/runs/{id}/finish',headers=student,json={}).json()
+    assert report['opening_seconds']==10 and report['first_entry_seconds']==181
+    assert report['parts']['Открытие за 30 секунд']==10
+    assert report['parts']['Первая запись за 3 минуты']==0
 
 
 def test_wrong_service_rejects_card_and_other_service_contact_needs_number(client):
@@ -213,10 +312,10 @@ def test_mixed_sources_editor_and_immutable_active_snapshot(client):
     created=client.post('/api/dds/exercises',headers=teacher,json={'source':'mixed','count':4,'variants':['clean']}).json()['scenario_ids']
     with SessionLocal() as s:assert [s.get(ScenarioSettings,i).source['origin'] for i in created]==['generated','student','generated','student']
     scenarios=client.get('/api/scenarios',headers=teacher).json();scenario=next(c for c in scenarios if c['id']==created[0]);gold=scenario['expected']['dds_gold']
-    payload={'card':gold,'title':'Изменённый ДДС','norm_seconds':240,'reference_text':scenario['caller_text'],'reference_card':gold}
+    payload={'card':gold,'title':'Изменённый ДДС','norm_seconds':180,'reference_text':scenario['caller_text'],'reference_card':gold}
     response=client.put(f'/api/dds/exercises/{scenario["id"]}',headers=teacher,json=payload);assert response.status_code==200,response.text
-    scenario=next(c for c in client.get('/api/scenarios',headers=teacher).json() if c['id']==created[0]);assert scenario['title']=='Изменённый ДДС' and scenario['expected']['norm_seconds']==240
-    _,run=lesson(client,teacher,student,[scenario]);assert run['norm_seconds']==240
+    scenario=next(c for c in client.get('/api/scenarios',headers=teacher).json() if c['id']==created[0]);assert scenario['title']=='Изменённый ДДС' and scenario['expected']['norm_seconds']==180
+    _,run=lesson(client,teacher,student,[scenario]);assert run['norm_seconds']==180
     assert client.put(f'/api/dds/exercises/{scenario["id"]}',headers=teacher,json=payload).status_code==409
     admin=auth(client,'admin');other=client.post('/api/users',headers=admin,json={'username':'other-dds-student','password':'otherdds12345','role':'student'}).json()
     response=client.post('/api/login',json={'username':'other-dds-student','password':'otherdds12345'});headers={'Authorization':'Bearer '+response.json()['token']}
@@ -238,9 +337,10 @@ def test_overdue_first_reaction_does_not_receive_maximum(client):
         context.registered_at-=timedelta(seconds=300);s.commit()
     service=run['service_code']
     assert client.post(f'/api/runs/{id}/status',headers=student,json={'service_code':service,'status':'Принята','comment':'Принято'}).status_code==200
-    assert client.post(f'/api/runs/{id}/status',headers=student,json={'service_code':service,'status':'Работы завершены','comment':'Работы выполнены'}).status_code==200
+    complete_dds(client,student,run)
     report=client.post(f'/api/runs/{id}/finish',headers=student,json={}).json()
-    assert report['parts']['Время первой реакции']==0 and report['time_deviation_seconds']>0
+    assert report['parts']['Открытие за 30 секунд']==0 and report['parts']['Первая запись за 3 минуты']==0
+    assert report['opening_seconds']>=300 and report['first_entry_seconds']>=300
 
 
 def test_teacher_stop_closes_active_dds_sip_call(client,monkeypatch):
@@ -271,7 +371,7 @@ def test_dds_template_sets_own_service_and_does_not_grade_legacy_sip_policy(clie
     run=client.post(f'/api/lessons/{lesson_id}/next',headers=student).json();id=run['run_id']
     assert run['service_code']==service and run['require_sip'] is False
     assert client.post(f'/api/runs/{id}/status',headers=student,json={'service_code':service,'status':'Принята','comment':'Принято'}).status_code==200
-    assert client.post(f'/api/runs/{id}/status',headers=student,json={'service_code':service,'status':'Работы завершены','comment':'Работы выполнены'}).status_code==200
+    complete_dds(client,student,run)
     response=client.post(f'/api/runs/{id}/finish',headers=student,json={})
     assert response.status_code==200,response.text
     report=response.json();assert report['score']==100 and report['dds']['workflow']=='status'
@@ -290,7 +390,7 @@ def test_teacher_stop_records_incomplete_dds_statuses(client):
     run=client.post(f'/api/lessons/{id}/next',headers=student).json()
     assert client.post(f'/api/lessons/{id}/stop',headers=teacher).status_code==200
     report=client.get(f'/api/runs/{run["run_id"]}',headers=student).json()['report']
-    assert report['dds']['workflow']=='status' and report['score']==0
+    assert report['dds']['workflow']=='status' and report['score']<=10
     assert report['parts']['Решение своей службы']==0
 
 

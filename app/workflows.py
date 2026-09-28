@@ -11,9 +11,9 @@ from sqlalchemy.orm import Session
 from app.models import (User, Scenario, SessionRun, Audit, ClassifierVersion, IncidentType,
                         ScenarioSettings, Material, Lesson, RunContext, CardEvent, ExpertReview, AccountState, AiJob, SipAccount, VoipCall, CardAttachment, TrainingMessage)
 from app.schemas import (CardIn, DraftIn, ResolveIn, SettingsIn, LessonIn, LessonTemplateIn, TemplateAssignmentIn, StatusIn,
-                         WorkCallIn, ReviewIn, UserIn, UserUpdateIn)
+                         WorkCallIn, DdsErrorIn, ReviewIn, UserIn, UserUpdateIn)
 from app.classifier import active_workbook, parse_workbook, resolve_rules, FLAGS, SERVICE_NAMES
-from app.training import available_statuses, card_indicator, ACCEPTED, REJECTED, REFUSED, TERMINAL
+from app.training import available_statuses, card_indicator, dds_status_options, dds_status_complete, ACCEPTED, REJECTED, REFUSED, TERMINAL
 
 SOURCES=Path('source_materials')
 
@@ -197,10 +197,22 @@ def history_for(events):
     return result
 
 def status_options(context,current,service):
-    options=available_statuses(current,service)
-    if context and context.scenario_snapshot.get('dds_workflow')=='status' and current in ('Добавлена','Получена службой',None) and REJECTED not in options:
-        return options+[REJECTED]
-    return options
+    if context and context.scenario_snapshot.get('dds_workflow')=='status':
+        if context.scenario_snapshot.get('dds_rules_version')==2:return dds_status_options(current,service)
+        options=available_statuses(current,service)
+        if current in ('Добавлена','Получена службой',None) and REJECTED not in options:return options+[REJECTED]
+        return options
+    return available_statuses(current,service)
+
+def dds_timing(run,context,history):
+    """Both confirmed deadlines start when the card enters the DDS queue."""
+    snapshot=context.scenario_snapshot
+    received=datetime.fromisoformat(snapshot['queue_started_at']) if snapshot.get('queue_started_at') else aware(run.started_at)
+    opened=max(0,int((aware(run.started_at)-aware(received)).total_seconds()))
+    own=history.get(snapshot['service_code'],[])
+    first=next((item for item in own if item['status'] not in ('Добавлена','Получена службой')),None)
+    entry=max(0,int((datetime.fromisoformat(first['at'])-aware(received)).total_seconds())) if first else None
+    return {'opening_seconds':opened,'first_entry_seconds':entry,'opening_norm_seconds':30,'first_entry_norm_seconds':180}
 
 def elapsed_seconds(run,context,at=None):
     snapshot=context.scenario_snapshot if context else {}
@@ -211,7 +223,7 @@ def elapsed_seconds(run,context,at=None):
     active_since=snapshot.get('timer_active_since')
     anchor=datetime.fromisoformat(active_since) if active_since else aware(run.started_at)
     if snapshot.get('dds_workflow')=='status' and snapshot.get('queue_started_at'):
-        anchor=datetime.fromisoformat(snapshot['queue_started_at'])
+        anchor=aware(datetime.fromisoformat(snapshot['queue_started_at']))
         cutoff=at or aware(run.finished_at) or now()
         return max(0,int((cutoff-anchor).total_seconds()))
     cutoff=aware(context.registered_at) if context and context.registered_at and snapshot.get('mode','call')=='call' else (at or aware(run.finished_at) or now())
@@ -249,13 +261,17 @@ def run_payload(s,run,context):
         context.scenario_snapshot={**snapshot,'last_indicator':indicator};s.commit()
     from app.models import TrainingMessage
     unread=s.scalar(select(func.count()).select_from(TrainingMessage).where(TrainingMessage.run_id==run.id,TrainingMessage.read.is_(False)))
+    dds_times=dds_timing(run,context,history) if snapshot.get('dds_rules_version')==2 else {}
     return {'run_id':run.id,'scenario_id':run.scenario_id,'student_id':run.student_id,
             'started_at':aware(run.started_at),'finished_at':aware(run.finished_at),
             'timer_started_at':now()-timedelta(seconds=elapsed_seconds(run,context)), 'elapsed_seconds':elapsed_seconds(run,context),
             'card':run.answers,'revision':context.revision if context else 0,'checked':bool(context and context.checked),
             'operator_id':snapshot.get('origin_operator_id',str(run.student_id)),'workstation':snapshot.get('origin_workstation',str(run.student_id)),
             'mode':snapshot.get('mode','call'),'service_code':snapshot.get('service_code','112'),'lesson_id':context.lesson_id if context else None,
-            'norm_seconds':snapshot.get('expected',{}).get('norm_seconds',30),
+            'norm_seconds':180 if snapshot.get('dds_rules_version')==2 else snapshot.get('expected',{}).get('norm_seconds',30),
+            'dds_timing':dds_times,
+            'dds_received_at':snapshot.get('queue_started_at') if snapshot.get('dds_rules_version')==2 else None,
+            'dds_rules_version':snapshot.get('dds_rules_version'),
             'timer_frozen':bool(context and context.registered_at and snapshot.get('mode','call')=='call'),
             'postprocessing_seconds':postprocessing_seconds(run,context,events),
             'last_request_id':snapshot.get('last_draft_request_id'),'registered_at':context.registered_at if context else None,
@@ -349,7 +365,7 @@ def begin_run(s,u,scenario,lesson=None):
             service=next(iter(run.answers['services']),None)
         if not service or service not in run.answers['services']:raise HTTPException(422,'Учебной службы нет в карточке ДДС')
         snapshot['service_code']=service
-        context.scenario_snapshot={**snapshot,'dds_original':deepcopy(run.answers),'dds_workflow':'status','queue_started_at':aware(lesson.started_at).isoformat() if lesson and lesson.started_at else now().isoformat()}
+        context.scenario_snapshot={**snapshot,'dds_original':deepcopy(run.answers),'dds_workflow':'status','dds_rules_version':2,'queue_started_at':aware(lesson.started_at).isoformat() if lesson and lesson.started_at else now().isoformat()}
         register_card(s,u,run,context)
         s.add(CardEvent(run_id=run.id,user_id=u.id,kind='dds.received',data={'source':settings.source,'services':run.answers['services']}))
         s.add(CardEvent(run_id=run.id,user_id=u.id,kind='service.status',data={'service_code':service,'status':'Получена службой','comment':'','unit_number':''}))
@@ -837,6 +853,17 @@ def register_routes(app,db,current,evaluate,pwd):
         directory_codes=set(SERVICE_NAMES)|({x['code'] for x in version.manifest['columns']} if version else set())
         if x.service and x.service not in directory_codes and x.service not in run.answers.get('services',[]): raise HTTPException(422,'Выберите службу из справочника или заполните «Куда звонили»')
         s.add(CardEvent(run_id=run.id,user_id=u.id,kind='work.call',data=x.model_dump()));log(s,u,'work.call',{'run_id':run.id});s.commit();return run_payload(s,run,context)
+
+    @app.post('/api/runs/{run_id}/dds-error')
+    def report_dds_error(run_id:int,x:DdsErrorIn,u=Depends(current),s=Depends(db)):
+        if u.role!='student':raise HTTPException(403)
+        run,context=get_run(s,u,run_id,True);ensure_writable(run,context,s)
+        if not context or context.scenario_snapshot.get('dds_workflow')!='status':
+            raise HTTPException(422,'Сообщение об ошибке доступно только диспетчеру ДДС')
+        data={key:value.strip() for key,value in x.model_dump().items()}
+        s.add(CardEvent(run_id=run.id,user_id=u.id,kind='dds.error_report',data=data))
+        log(s,u,'dds.error_report',{'run_id':run.id,'field':data['field']})
+        s.commit();return run_payload(s,run,context)
 
     @app.post('/api/runs/{run_id}/processed')
     def processed(run_id:int,u=Depends(current),s=Depends(db)):
