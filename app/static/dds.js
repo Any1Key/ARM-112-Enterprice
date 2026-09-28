@@ -1,5 +1,5 @@
 'use strict';
-const ddsNav=el('button','nav-item');ddsNav.id='dds-nav';ddsNav.dataset.view='dds';ddsNav.append(el('span','','⇄'),document.createTextNode(' Кабинет ДДС'));$('lessons-nav').after(ddsNav);ddsNav.addEventListener('click',()=>switchView('dds'));
+const ddsNav=$('dds-nav')||el('button','nav-item');if(!ddsNav.id){ddsNav.id='dds-nav';ddsNav.dataset.view='dds';ddsNav.append(el('span','','⇄'),document.createTextNode(' Кабинет ДДС'));$('lessons-nav').after(ddsNav);}ddsNav.addEventListener('click',()=>switchView('dds'));
 let ddsRun=null,ddsCatalog=null,ddsOwner='',ddsLoading=false,ddsPoll=false,ddsLastReport=null;
 const ddsFields=[['incident_type','Тип происшествия'],['address','Место происшествия'],['description','Описание'],['caller_name','Заявитель'],['aon','АОН'],['caller_phone','Обратный телефон'],['on_site_phone','Телефон на месте'],['victims_count','Количество пострадавших']];
 function ddsField(label,input){const node=el('label','',label);node.append(input);return node;}
