@@ -350,6 +350,43 @@ def reports(u=Depends(current),s:Session=Depends(db),started_from:datetime|None=
                      'expert_review':{'score':review.score,'comment':review.comment,'at':aware(review.at)} if review else None})
     return rows
 
+@app.get('/api/reports/insights')
+def report_insights(u=Depends(current),s:Session=Depends(db),started_from:datetime|None=None,started_before:datetime|None=None):
+    """Return local, explainable group recommendations for teachers and admins."""
+    if u.role not in ('teacher','admin'):
+        raise HTTPException(403, 'Аналитические рекомендации доступны преподавателю')
+    rows=reports(u,s,started_from,started_before)
+    completed=[row for row in rows if row['finished_at'] and not (row['report'] or {}).get('skipped')]
+    error_counts={}
+    scenario_stats={}
+    for row in completed:
+        report=row['report'] or {}
+        for error in report.get('errors',[]):
+            error_counts[error]=error_counts.get(error,0)+1
+        key=row['scenario_title'] or f"Сценарий №{row['scenario_id']}"
+        bucket=scenario_stats.setdefault(key,{'attempts':0,'score_sum':0,'low_scores':0})
+        bucket['attempts']+=1
+        if row['score'] is not None:
+            bucket['score_sum']+=row['score']
+            bucket['low_scores']+=row['score']<60
+    frequent=[{'error':error,'count':count} for error,count in sorted(error_counts.items(),key=lambda item:(-item[1],item[0]))[:5]]
+    weak_scenarios=[]
+    for title,bucket in scenario_stats.items():
+        average=round(bucket['score_sum']/bucket['attempts'],1) if bucket['attempts'] else None
+        if average is not None and (average<80 or bucket['low_scores']):
+            weak_scenarios.append({'scenario':title,'attempts':bucket['attempts'],'average_score':average,'low_scores':bucket['low_scores']})
+    weak_scenarios.sort(key=lambda item:(item['average_score'],item['scenario']))
+    recommendations=[]
+    for item in frequent[:3]:
+        recommendations.append(f"Разберите с группой ошибку «{item['error']}» — повторилась {item['count']} раз.")
+    for item in weak_scenarios[:3]:
+        recommendations.append(f"Назначьте дополнительную тренировку «{item['scenario']}»: средний балл {item['average_score']}.")
+    if not recommendations and completed:
+        recommendations.append('Критичных повторяющихся ошибок не выявлено; продолжайте плановую практику.')
+    return {'attempts':len(rows),'completed':len(completed),'frequent_errors':frequent,
+            'weak_scenarios':weak_scenarios[:5],'recommendations':recommendations[:6],
+            'method':'Локальная объяснимая аналитика по результатам и ошибкам; внешние данные не используются.'}
+
 @app.get('/api/audit')
 def audit_events(u=Depends(current),s:Session=Depends(db)):
     if u.role!='admin': raise HTTPException(403, 'Журнал доступен администратору')

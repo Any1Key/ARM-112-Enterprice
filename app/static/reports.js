@@ -109,6 +109,7 @@ const reportTo=reportControl('По дату включительно',el('input'
 const reportReset=el('button','secondary','Сбросить фильтры');reportReset.type='button';reportFilters.append(reportReset);
 const reportSummary=el('p','source-meta');
 $('reports-list').before(reportFilters,reportSummary);
+const reportInsights=$('report-insights');
 let reportFilterOwner=null;
 function reportLocalDay(value){const d=new Date(value);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
 function reportPeriod(){
@@ -121,6 +122,18 @@ function reportPeriod(){
 }
 function reportFilteredRows(){reportPeriod();return state.reports.filter(r=>(!reportStudent.value||String(r.student_id)===reportStudent.value)&&(!reportFrom.value||reportLocalDay(r.started_at)>=reportFrom.value)&&(!reportTo.value||reportLocalDay(r.started_at)<=reportTo.value));}
 function reportStats(rows){const graded=rows.filter(r=>!r.report?.skipped&&r.score!==null&&r.score!==undefined);const completed=rows.filter(r=>r.finished_at&&!r.report?.skipped).length;return `${rows.length} попыток · завершено ${completed} · пропущено ${rows.filter(r=>r.report?.skipped).length} · средний балл ${graded.length?(graded.reduce((sum,r)=>sum+r.score,0)/graded.length).toFixed(1):'—'}`;}
+async function renderReportInsights(){
+  if(!['teacher','admin'].includes(state.role)){reportInsights.hidden=true;return;}
+  try{
+    const params=new URLSearchParams();if(reportFrom.value)params.set('started_from',new Date(reportFrom.value+'T00:00:00').toISOString());
+    if(reportTo.value){const end=new Date(reportTo.value+'T00:00:00');end.setDate(end.getDate()+1);params.set('started_before',end.toISOString());}
+    const data=await api('/api/reports/insights?'+params);reportInsights.replaceChildren();
+    reportInsights.append(el('h2','','Рекомендации преподавателю'),el('p','source-meta',`${data.attempts} попыток · завершено ${data.completed}. ${data.method}`));
+    if(!data.recommendations.length)reportInsights.append(el('p','empty-table','Недостаточно завершённых тренировок для рекомендаций.'));
+    else {const list=el('ul','result-errors');data.recommendations.forEach(item=>list.append(el('li','',item)));reportInsights.append(list);}
+    reportInsights.hidden=false;
+  }catch(error){reportInsights.hidden=true;}
+}
 renderReports=function(){
   const owner=state.role+':'+(state.username||$('who').textContent);
   if(reportFilterOwner!==owner){reportFilterOwner=owner;reportFrom.value='';reportTo.value='';reportStudent.replaceChildren();reportGrouping.value=state.role==='student'?'day':'student';show('report-detail',false);reportListing(true);}
@@ -131,6 +144,7 @@ renderReports=function(){
   const container=$('reports-list');const opened=new Set([...container.querySelectorAll('details[open][data-report-group]')].map(g=>g.dataset.reportGroup));container.replaceChildren();
   let rows;try{rows=reportFilteredRows();}catch(e){reportSummary.textContent=e.message;return;}
   reportSummary.textContent=reportStats(rows)+' · период по дате начала обработки';
+  renderReportInsights();
   if(!rows.length){container.append(el('p','empty-table','По выбранным фильтрам результатов нет.'));return;}
   function appendRows(target,items){const holder=el('div','report-table');target.append(holder);table(holder,['Сценарий','Студент','Начало','Результат','Время','Отчёт'],items.map(run=>{const title=el('span','',run.scenario_title||`Сценарий №${run.scenario_id}`);title.append(el('small','',`Попытка №${run.id}`));const score=el('span','score-pill'+(run.score!==null&&run.score<60?' low':''),run.report?.skipped?'Пропущена':run.score===null?'В процессе':`${run.score} / 100`);const button=el('button','table-button','Разбор →');button.addEventListener('click',guarded(()=>openReportDetail(run.id)));return [title,run.student_name||`№${run.student_id}`,date(run.started_at),score,run.report?duration(run.report.elapsed_seconds):'—',button];}));}
   if(reportGrouping.value==='none'){appendRows(container,rows);return;}
