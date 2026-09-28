@@ -29,7 +29,7 @@ def sync_dispatch_permissions(session_factory):
             if version:
                 for item in version.manifest.get('columns',[]):names.setdefault(item['code'],item.get('name',item['code']))
             for extension, item in by_code(names).items():
-                if extension in services:
+                if extension in services or (root/'allow-all-services').exists():
                     number=item['extension'];allowed.add(f'dispatch-{run.student_id}-{number}.allow');metadata[number]=item['name']
     for path in root.glob('dispatch-*.allow'):
         if path.name not in allowed:
