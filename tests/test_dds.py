@@ -184,6 +184,41 @@ def test_dds_softphone_prepares_brigade_and_superior_roles(client,monkeypatch):
     assert second.json()['role']=='superior' and 'Вышестоящий начальник' in greetings[-1]
 
 
+def test_dds_softphone_calls_only_other_service_with_number_in_received_card(client,monkeypatch):
+    from app.main import SessionLocal
+    from app.models import SipAccount
+    from app import dds_telephony
+    teacher,student=auth(client,'teacher'),auth(client,'student')
+    scenario=build(client,teacher)[0]
+    services=scenario['initial_card']['services']
+    if len(services)<2:pytest.skip('Для учебного звонка нужна другая служба')
+    other=services[1];phone='+7 495 000 00 00'
+    card={**scenario['initial_card'],'service_phones':{other:phone}}
+    edited=client.put(f'/api/dds/exercises/{scenario["id"]}',headers=teacher,json={'card':card})
+    assert edited.status_code==200,edited.text
+    _,run=lesson(client,teacher,student,[scenario]);id=run['run_id']
+    with SessionLocal() as s:
+        s.add(SipAccount(user_id=3,username='arm3',password='test-secret'));s.commit()
+    greetings=[]
+    monkeypatch.setattr(dds_telephony,'phone_registered',lambda name:True)
+    monkeypatch.setattr(dds_telephony,'prepare_speech',lambda text,name:greetings.append(text) or {'key':'b'*64,'voice':'test','engine':'test','cached':True})
+    monkeypatch.setattr(dds_telephony,'ami_action',lambda *args,**kwargs:{'Response':'Success'})
+    monkeypatch.setattr(dds_telephony,'launch_worker',lambda target,args:args[-1].set())
+    assert client.post(f'/api/dds/runs/{id}/sip-call',headers=student,json={'role':'service','service':run['service_code']}).status_code==422
+    assert client.post(f'/api/dds/runs/{id}/sip-call',headers=student,json={'role':'service','service':'NOT_IN_CARD'}).status_code==422
+    without_number=next((code for code in services if code not in (run['service_code'],other)),None)
+    if without_number:
+        assert client.post(f'/api/dds/runs/{id}/sip-call',headers=student,json={'role':'service','service':without_number}).status_code==422
+    result=client.post(f'/api/dds/runs/{id}/sip-call',headers=student,json={'role':'service','service':other})
+    assert result.status_code==200,result.text
+    assert result.json()['service']==other and result.json()['phone']==phone and result.json()['role']=='service'
+    assert 'Дежурный учебной службы' in greetings[-1]
+    events=client.get(f'/api/reports/{id}',headers=teacher).json()['events']
+    assert any(event['kind']=='dds.call.prepared' and event['data']['service']==other and event['data']['phone']==phone for event in events)
+    report_calls=client.get(f'/api/reports/{id}',headers=teacher).json()['calls']
+    assert report_calls[0]['role']=='service' and report_calls[0]['phone']==phone
+
+
 def test_dds_opening_and_first_entry_deadlines_are_independent(client):
     from app.main import SessionLocal
     from app.workflows import events_for

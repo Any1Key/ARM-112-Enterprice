@@ -43,6 +43,7 @@ def register_report_details(app,db,current):
                 'calls':[{'id':c.id,'direction':'outbound' if c.id in prepared else 'inbound',
                           'service':prepared.get(c.id,{}).get('service'), 'service_name':prepared.get(c.id,{}).get('name') or service_names.get(prepared.get(c.id,{}).get('service')),
                           'role':prepared.get(c.id,{}).get('role'),
+                          'phone':prepared.get(c.id,{}).get('phone'),
                           'extension':prepared.get(c.id,{}).get('extension'), 'handoffs':handoffs[c.id], 'state':c.state,'created_at':aware(c.created_at),'answered_at':aware(c.answered_at),
                           'ended_at':aware(c.ended_at),'error':c.error,'audio':audio.get(c.id),
                           'waiting_seconds':max(0,round((c.answered_at-c.created_at).total_seconds(),2)) if c.answered_at else None,
