@@ -11,6 +11,7 @@ from app.models import VoipCall, CardEvent, Audit, SipAccount, Lesson, SessionRu
 from app.workflows import get_run, ensure_writable, events_for
 from app.dds import directory
 from app.telephony import ami_action,ami_connect,read_frame,prepare_speech,phone_registered,launch_worker
+from app.service_directory import by_code
 
 class CallIn(BaseModel):
     service:str=Field(default='',max_length=100)
@@ -91,7 +92,6 @@ def register_dds_telephony(app,db,current,factory):
                 if not service or service not in run.answers.get('services',[]) or service==context.scenario_snapshot['service_code']:
                     raise HTTPException(422,'Выберите другую службу, получившую эту карточку')
                 phone=run.answers.get('service_phones',{}).get(service,'').strip()
-                if not phone:raise HTTPException(422,'Телефон этой службы не указан в полученной карточке')
                 name=directory(s).get(service,service)
                 greeting=f'{name}. Дежурный учебной службы слушает. Сообщите обстоятельства и необходимые совместные действия.'
             else:
@@ -115,7 +115,7 @@ def register_dds_telephony(app,db,current,factory):
             call=VoipCall(run_id=run.id,state='ringing',sound_key=speech['key']);s.add(call);s.flush()
             extension='80'+str(call.id)
             ami_action('Command',Command=f'database put dds {u.id}/{extension} {speech["key"]}:{run.id}:{call.id}')
-            s.add(CardEvent(run_id=run.id,user_id=u.id,kind='dds.call.prepared',data={'call_id':call.id,'extension':extension,'service':service,'name':name,'role':x.role if status_mode else None,'phone':phone,'direction':'outbound'}))
+            s.add(CardEvent(run_id=run.id,user_id=u.id,kind='dds.call.prepared',data={'call_id':call.id,'extension':extension,'service':service,'name':name,'service_number':by_code(directory(s)).get(service,{}).get('extension',service),'role':x.role if status_mode else None,'phone':phone,'direction':'outbound'}))
             s.add(CardEvent(run_id=run.id,user_id=u.id,kind='sip.audio_ready',data={'call_id':call.id,'voice':speech.get('voice'),'engine':speech.get('engine'),'cached':speech.get('cached',False),'preparation_ms':0}))
             s.add(Audit(user_id=u.id,action='dds.call.prepared',details={'run_id':run.id,'call_id':call.id,'service':service,'role':x.role if status_mode else None}));s.commit()
         except HTTPException:raise
@@ -127,4 +127,5 @@ def register_dds_telephony(app,db,current,factory):
             raise HTTPException(503,'Не удалось подготовить SIP-вызов')
         s.refresh(call)
         if call.state=='failed':raise HTTPException(503,'Asterisk недоступен')
-        return {'call_id':call.id,'extension':extension,'service':service,'name':name,'role':x.role if status_mode else None,'phone':phone,'training':True}
+        service_number=by_code(directory(s)).get(service,{}).get('extension',service)
+        return {'call_id':call.id,'extension':extension,'service':service,'service_number':service_number,'name':name,'role':x.role if status_mode else None,'phone':phone,'training':True}

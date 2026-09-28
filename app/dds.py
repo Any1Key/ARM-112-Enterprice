@@ -11,6 +11,7 @@ from app.models import Scenario, ScenarioSettings, SessionRun, RunContext, Incid
 from app.schemas import CardIn
 from app.classifier import SERVICE_NAMES
 from app.workflows import get_run, ensure_writable, assert_teacher, assert_editable, now, events_for, elapsed_seconds
+from app.service_directory import entries as service_entries
 
 VARIANTS = {'clean':'Служба указана по назначению','services':'Карточка направлена не той службе'}
 FIELDS = ('incident_type','address','description','caller_name','caller_phone','aon','on_site_phone','victims_count','classifier_ids','services')
@@ -240,7 +241,7 @@ def register_dds(app,db,current):
         for t in types:counts[t.category]=counts.get(t.category,0)+1
         sources=teacher_sources(s,u,[])
         return {'categories':[{'name':name,'count':count,'student_cards':sum(c.scenario_snapshot.get('category',sc.category)==name for r,c,sc in sources)} for name,count in counts.items()],
-                'student_cards':len(sources),'variants':VARIANTS,'services':directory(s)}
+                'student_cards':len(sources),'variants':VARIANTS,'services':directory(s),'service_directory':service_entries(directory(s))}
 
     @app.post('/api/dds/exercises')
     def build(x:BuildIn,u=Depends(current),s=Depends(db)):

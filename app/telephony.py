@@ -6,23 +6,31 @@ import httpx
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from sqlalchemy import select
-from app.models import User, SipAccount, VoipCall, SessionRun, RunContext, AccountState, Audit, CardEvent, Scenario
+from app.models import User, SipAccount, VoipCall, SessionRun, RunContext, AccountState, Audit, CardEvent, Scenario, ClassifierVersion
 from app.workflows import get_run, ensure_writable, check_scenario_access, settings_for, aware
 from app.speech_text import tts_text
+from app.classifier import SERVICE_NAMES
+from app.service_directory import by_code
 provision_lock=threading.Lock()
 DISPATCH_EXTENSIONS={'101','102','103','104'}
+_service_metadata_signature=None
 
 def sync_dispatch_permissions(session_factory):
     """Publish active DDS service permissions for the physical SIP dialplan."""
     root=Path(os.getenv('SIP_PROVISION_ROOT','/provision'));root.mkdir(exist_ok=True)
-    allowed=set()
+    allowed=set(); metadata={}
     with session_factory() as s:
         for run in s.scalars(select(SessionRun).where(SessionRun.finished_at.is_(None))):
             context=s.get(RunContext,run.id)
             if not context or context.scenario_snapshot.get('mode') not in ('dispatch','dds'):continue
             services=(run.answers or {}).get('services',[])
-            for extension in DISPATCH_EXTENSIONS.intersection(str(code) for code in services):
-                allowed.add(f'dispatch-{run.student_id}-{extension}.allow')
+            names=dict(SERVICE_NAMES)
+            version=s.scalar(select(ClassifierVersion).order_by(ClassifierVersion.id.desc()))
+            if version:
+                for item in version.manifest.get('columns',[]):names.setdefault(item['code'],item.get('name',item['code']))
+            for extension, item in by_code(names).items():
+                if extension in services:
+                    number=item['extension'];allowed.add(f'dispatch-{run.student_id}-{number}.allow');metadata[number]=item['name']
     for path in root.glob('dispatch-*.allow'):
         if path.name not in allowed:
             try:path.unlink()
@@ -30,6 +38,15 @@ def sync_dispatch_permissions(session_factory):
     for name in allowed:
         path=root/name
         if not path.exists():path.write_text('active DDS assignment\n')
+    global _service_metadata_signature
+    signature=tuple(sorted(metadata.items()))
+    if signature != _service_metadata_signature:
+        try:
+            for number,name in metadata.items():
+                ami_action('Command',Command=f'database put arm112 service-name/{number} {name}')
+            _service_metadata_signature=signature
+        except (OSError,ConnectionError):
+            pass
 
 def start_dispatch_permission_sync(session_factory):
     def worker_loop():

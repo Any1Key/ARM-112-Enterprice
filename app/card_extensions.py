@@ -13,6 +13,7 @@ from app.schemas import CardIn,SupplementIn
 from app.classifier import SERVICE_NAMES
 from app.workflows import get_run,ensure_writable,run_payload,now,aware,log,begin_run,check_scenario_access
 from app.questionnaires import catalog
+from app.service_directory import entries as service_entries
 
 class IssueReviewIn(BaseModel):
     status:str=Field(pattern='^(new|done|cancelled|false)$')
@@ -71,7 +72,7 @@ def register_extensions(app,db,current):
         version=s.scalar(select(ClassifierVersion).order_by(ClassifierVersion.id.desc()))
         if version:
             for c in version.manifest['columns']:services.setdefault(c['code'],c['name'])
-        return [{'code':code,'name':name,'phone':code if code in ('101','102','103','104') else '', 'extension':code if code in ('101','102','103','104') else '900'} for code,name in services.items() if code!='MOSBEZ_ANALYTICS']
+        return service_entries(services)
 
     @app.get('/api/operator/presence')
     def read_presence(u=Depends(current),s=Depends(db)):
