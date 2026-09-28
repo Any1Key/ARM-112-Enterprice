@@ -99,11 +99,6 @@ services:
     command: ['exec turnserver --no-cli --no-tls --no-dtls --fingerprint --lt-cred-mech --use-auth-secret --static-auth-secret="$$TURN_SECRET" --realm=arm112.local --listening-port=3478 --min-port=49160 --max-port=49559 --log-file=stdout']
     ports: ["3478:3478", "3478:3478/udp"]
     restart: unless-stopped
-  voice:
-    build: ./services/voice
-    profiles: ["piper"]
-    volumes: ["call_media:/media"]
-    restart: unless-stopped
   voice-silero:
     build:
       context: .

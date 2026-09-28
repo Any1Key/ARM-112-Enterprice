@@ -256,7 +256,7 @@ def register_telephony(app,db,current,session_factory):
             if sock:sock.close()
     @app.get('/api/telephony/health')
     def health(u=Depends(current)):
-        try:ami_action('Ping');return {'status':'ok','transport':'SIP/WebRTC','voice':'piper-russian'}
+        try:ami_action('Ping');return {'status':'ok','transport':'SIP/WebRTC','voice':'silero-v5_5_ru'}
         except (OSError,ConnectionError):return {'status':'unavailable','message':'Профиль voip не запущен или Asterisk недоступен'}
     @app.post('/api/telephony/account')
     def account(request:Request,device:str='browser',u=Depends(current),s=Depends(db)):
