@@ -10,7 +10,7 @@ from app.models import User, SipAccount, VoipCall, SessionRun, RunContext, Accou
 from app.workflows import get_run, ensure_writable, check_scenario_access, settings_for, aware
 from app.speech_text import tts_text
 from app.classifier import SERVICE_NAMES
-from app.service_directory import by_code
+from app.service_directory import spoken_entries
 provision_lock=threading.Lock()
 DISPATCH_EXTENSIONS={'101','102','103','104'}
 _service_metadata_signature=None
@@ -28,7 +28,8 @@ def sync_dispatch_permissions(session_factory):
             version=s.scalar(select(ClassifierVersion).order_by(ClassifierVersion.id.desc()))
             if version:
                 for item in version.manifest.get('columns',[]):names.setdefault(item['code'],item.get('name',item['code']))
-            for extension, item in by_code(names).items():
+            for item in spoken_entries(names):
+                extension=item['code']
                 if extension in services or (root/'allow-all-services').exists():
                     number=item['extension'];allowed.add(f'dispatch-{run.student_id}-{number}.allow');metadata[number]=item['name']
     for path in root.glob('dispatch-*.allow'):
@@ -43,7 +44,7 @@ def sync_dispatch_permissions(session_factory):
     if signature != _service_metadata_signature:
         try:
             for number,name in metadata.items():
-                ami_action('Command',Command=f'database put arm112 service-name/{number} {name}')
+                ami_action('Command',Command=f'database put arm112 service-name/{number} "{name.replace(chr(34), chr(39))}"')
             _service_metadata_signature=signature
         except (OSError,ConnectionError):
             pass

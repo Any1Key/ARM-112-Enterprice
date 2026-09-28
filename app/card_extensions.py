@@ -13,7 +13,7 @@ from app.schemas import CardIn,SupplementIn
 from app.classifier import SERVICE_NAMES
 from app.workflows import get_run,ensure_writable,run_payload,now,aware,log,begin_run,check_scenario_access
 from app.questionnaires import catalog
-from app.service_directory import entries as service_entries
+from app.service_directory import spoken_entries as service_entries
 
 class IssueReviewIn(BaseModel):
     status:str=Field(pattern='^(new|done|cancelled|false)$')

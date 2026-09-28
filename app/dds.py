@@ -11,7 +11,7 @@ from app.models import Scenario, ScenarioSettings, SessionRun, RunContext, Incid
 from app.schemas import CardIn
 from app.classifier import SERVICE_NAMES
 from app.workflows import get_run, ensure_writable, assert_teacher, assert_editable, now, events_for, elapsed_seconds
-from app.service_directory import entries as service_entries
+from app.service_directory import spoken_entries as service_entries
 
 VARIANTS = {'clean':'Служба указана по назначению','services':'Карточка направлена не той службе'}
 FIELDS = ('incident_type','address','description','caller_name','caller_phone','aon','on_site_phone','victims_count','classifier_ids','services')
