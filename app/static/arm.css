@@ -22,3 +22,15 @@
 
 .classifier-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0 12px}.classifier-actions small,.classifier-message{font-size:11px;line-height:1.5;color:#536b79}.classifier-actions button{font-size:11px;padding:6px 9px}.arm-mode .feature-group button.selected,.arm-mode .type-match.selected{background:#117db6;color:white;border-color:#117db6}.arm-mode .classifier-results{display:block}.classifier-results>.type-match{margin-top:4px}.arm-mode .classifier-picker #incident{background:white;padding:7px;border:1px solid #aebbc4;min-height:32px}.arm-mode .classifier-picker #classifier-category,.arm-mode .classifier-picker #classifier-search{background:white;padding:6px;border:1px solid #bdc8cf;margin-bottom:8px}.arm-mode .classifier-picker #feature-picker:empty{padding:0}.arm-mode .classifier-actions #classifier-add{background:#eef5fa;color:#163d53;border:1px solid #9ab5c6;min-height:28px}
 .dds-status-mode .arm-mode .sip-controls,.dds-status-mode .arm-mode .journal-new-card{display:none}
+
+/* The incident journal uses the denser ARM grid, but its text remains readable
+   at the 1920px desktop size of the supplied 112 reference screens. */
+@media(min-width:1101px){
+  .arm-mode #card-query{font-size:24px}
+  .arm-mode .source-grid-head span{font-size:12px}
+  .arm-mode .feed-row{min-height:42px}
+  .arm-mode .feed-row>*{font-size:12px;line-height:1.3;padding:9px 6px}
+  .arm-mode .feed-row>.feed-type{font-size:12px}
+  .arm-mode .feed-content{font-size:12px;line-height:1.6;padding:8px 30px}
+  .arm-mode .journal-footer{font-size:11px}
+}
