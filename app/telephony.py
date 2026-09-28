@@ -124,33 +124,6 @@ qualify_frequency=30
     temp=root/'users.conf.tmp';temp.write_text(text);temp.chmod(0o600);temp.replace(root/'users.conf')
     ami_action('Command',Command='pjsip reload')
 
-def sync_dispatch_permissions(session_factory):
-    """Publish active DDS service permissions for the physical SIP dialplan."""
-    root=Path(os.getenv('SIP_PROVISION_ROOT','/provision'));root.mkdir(exist_ok=True)
-    allowed=set()
-    with session_factory() as s:
-        for run in s.scalars(select(SessionRun).where(SessionRun.finished_at.is_(None))):
-            context=s.get(RunContext,run.id)
-            if not context or context.scenario_snapshot.get('mode')!='dispatch':continue
-            services=(run.answers or {}).get('services',[])
-            for extension in DISPATCH_EXTENSIONS.intersection(str(code) for code in services):
-                allowed.add(f'dispatch-{run.student_id}-{extension}.allow')
-    for path in root.glob('dispatch-*.allow'):
-        if path.name not in allowed:
-            try:path.unlink()
-            except FileNotFoundError:pass
-    for name in allowed:
-        path=root/name
-        if not path.exists():path.write_text('active DDS assignment\n')
-
-def start_dispatch_permission_sync(session_factory):
-    def worker_loop():
-        while True:
-            try:sync_dispatch_permissions(session_factory)
-            except Exception:pass
-            time.sleep(1)
-    launch_worker(worker_loop,())
-
 def launch_worker(target,args):
     threading.Thread(target=target,args=args,daemon=True).start()
 
