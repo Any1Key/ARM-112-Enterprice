@@ -48,6 +48,13 @@ services:
     command: ["redis-server","--appendonly","yes"]
     volumes: ["redis_data:/data"]
     restart: unless-stopped
+  media-seed:
+    image: alpine:3.20
+    volumes:
+      - ./data/service_audio:/seed:ro
+      - call_media:/media
+    command: ["sh", "-c", "set -eu; for file in /seed/*.wav; do [ -e \"$$file\" ] || continue; name=$${file##*/}; [ -e \"/media/$$name\" ] || cp \"$$file\" \"/media/$$name\"; done"]
+    restart: "no"
   app:
     build: .
     env_file: [.env]
@@ -74,6 +81,7 @@ services:
       - ${BACKUP_DIR:-./backups}:/backups
     depends_on:
       db: {condition: service_healthy}
+      media-seed: {condition: service_completed_successfully}
     restart: unless-stopped
   asterisk:
     hostname: arm112-asterisk
@@ -89,6 +97,8 @@ services:
     volumes:
       - sip_provision:/provision
       - call_media:/media
+    depends_on:
+      media-seed: {condition: service_completed_successfully}
     restart: unless-stopped
   turn:
     image: coturn/coturn:4.6.2
