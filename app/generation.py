@@ -444,12 +444,39 @@ def generate_profile(topic,source,difficulty,started):
                    'needs_teacher_approval':True,'attempts':0,
                    'duration_seconds':round(time.perf_counter()-started,3)}
 
+def generate_rules_fallback(topic,source,difficulty,started):
+    """Generate a safe deterministic draft when the local rules engine is selected."""
+    source=source if isinstance(source,dict) else {}
+    title=topic.get('title','Учебное происшествие')
+    location=scenario_location(topic,source)
+    facts=material_facts(source) if source.get('situation') else f'Сообщаю о происшествии: {title.lower()}.'
+    if not facts.endswith(('.', '!', '?')): facts+='.'
+    caller_name=fictional_name()
+    caller_phone,aon=scenario_contacts()
+    address=scenario_address(source,location)
+    if address:
+        text=f'Сообщаю о происшествии. {facts} Место события: {address}.'
+    else:
+        text=f'Сообщаю о происшествии. {facts} Точный адрес пока неизвестен.'
+    if difficulty!='basic': text+=' Дополнительные обстоятельства уточняются.'
+    draft=ScenarioDraft(title=title,caller_text=text,expected_description=facts)
+    flags=material_flags(facts,topic.get('flags',{}))
+    result=compose_generated(draft,address,caller_name,caller_phone,aon)
+    result.flags=flags
+    return result,{'model':None,'digest':None,'engine':'rules-fallback','template_version':1,
+                   'needs_teacher_approval':True,'attempts':0,
+                   'duration_seconds':round(time.perf_counter()-started,3)}
+
 
 def generate_local(topic,source,difficulty):
     started=time.perf_counter()
     canonical=manifest().get(topic.get('code'))
     if topic.get('group_code') or (canonical and canonical['title']==topic.get('title')):
         return generate_profile(topic,source,difficulty,started)
+    if os.getenv('AI_MODE','rules').lower() in ('rules','template','deterministic'):
+        if canonical:
+            return generate_profile({**topic,**canonical},source,difficulty,started)
+        return generate_rules_fallback(topic,source,difficulty,started)
     model=os.getenv('OLLAMA_MODEL','qwen2.5:3b')
     location=scenario_location(topic,source)
     address=scenario_address(source,location)

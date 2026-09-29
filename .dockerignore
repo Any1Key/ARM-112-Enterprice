@@ -1,4 +1,5 @@
 backups/
+backups-mirror/
 docs/screenshots/
 __pycache__/
 **/__pycache__/
