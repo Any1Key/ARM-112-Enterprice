@@ -12,6 +12,8 @@ from sqlalchemy import select,func
 from app.models import User,SessionRun,Audit,AccountState
 from app.telephony import ami_action
 started=time.monotonic()
+operations_cache={'at':0.0,'value':None}
+operations_cache_lock=Lock()
 
 class ProcessCpuMeter:
     """One-second process CPU samples; 100% means one fully occupied core."""
@@ -102,6 +104,10 @@ def register_operations(app,db,current):
     @app.get('/api/operations')
     def operations(u=Depends(current),s=Depends(db)):
         if u.role!='admin':raise HTTPException(403)
+        now_monotonic=time.monotonic()
+        with operations_cache_lock:
+            if operations_cache['value'] is not None and now_monotonic-operations_cache['at']<3:
+                return operations_cache['value']
         def probe(name):
             try:
                 if name=='redis':redis.Redis.from_url(os.getenv('REDIS_URL','redis://redis:6379'),socket_connect_timeout=1,socket_timeout=1).ping()
@@ -113,7 +119,10 @@ def register_operations(app,db,current):
             except Exception as exc:return name,{'status':'unavailable','reason':type(exc).__name__}
         with ThreadPoolExecutor(max_workers=6) as executor:components=dict(executor.map(probe,['redis','asterisk','ml','voice','grammar','ollama']))
         components['postgresql']={'status':'ok'};components['backup']=backup_snapshot()
-        return {'at':datetime.now(timezone.utc),'uptime_seconds':round(time.monotonic()-started),**process_metrics(),'users':s.scalar(select(func.count(User.id))),'active_runs':s.scalar(select(func.count(SessionRun.id)).where(SessionRun.finished_at.is_(None))),'audit_events':s.scalar(select(func.count(Audit.id))),'components':components}
+        result={'at':datetime.now(timezone.utc),'uptime_seconds':round(time.monotonic()-started),**process_metrics(),'users':s.scalar(select(func.count(User.id))),'active_runs':s.scalar(select(func.count(SessionRun.id)).where(SessionRun.finished_at.is_(None))),'audit_events':s.scalar(select(func.count(Audit.id))),'components':components}
+        with operations_cache_lock:
+            operations_cache.update(at=time.monotonic(),value=result)
+        return result
 
     @app.post('/api/operations/backup',status_code=202)
     def request_backup(u=Depends(current),s=Depends(db)):

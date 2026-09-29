@@ -75,6 +75,9 @@ services:
       TURN_SECRET: ${TURN_SECRET:-arm112-local-turn-change-me}
       ASTERISK_HOST: asterisk
       ASTERISK_AMI_SECRET: ${ASTERISK_AMI_SECRET:-arm112-local-ami-change-me}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
+      DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-30}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 15s

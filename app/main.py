@@ -16,7 +16,12 @@ from passlib.context import CryptContext
 
 DATABASE_URL=os.getenv('DATABASE_URL','sqlite:///./data/runtime/arm112.db')
 SECRET_KEY=os.getenv('SECRET_KEY','dev-secret-change-me')
-engine=create_engine(DATABASE_URL, pool_pre_ping=True)
+engine_options={'pool_pre_ping':True}
+if not DATABASE_URL.startswith('sqlite'):
+    engine_options.update(pool_size=int(os.getenv('DB_POOL_SIZE','10')),
+                          max_overflow=int(os.getenv('DB_MAX_OVERFLOW','20')),
+                          pool_timeout=int(os.getenv('DB_POOL_TIMEOUT','30')))
+engine=create_engine(DATABASE_URL, **engine_options)
 SessionLocal=sessionmaker(engine, expire_on_commit=False)
 pwd=CryptContext(schemes=['bcrypt'], deprecated='auto')
 
