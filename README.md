@@ -17,11 +17,11 @@
 
 ## Быстрый запуск
 
-Описанная здесь версия находится в ветке `dds`. Для первого знакомства достаточно базового запуска без голосовых сервисов:
+Описанная здесь версия находится в репозитории `Any1Key/dds-any1key`. Для первого знакомства достаточно базового запуска без телефонии и голосовых сервисов:
 
 ```bash
-git clone --branch dds --single-branch https://github.com/yaro-s-lav/hacka.git
-cd hacka
+git clone --branch main --single-branch https://github.com/Any1Key/dds-any1key.git
+cd dds-any1key
 docker compose up -d --build
 docker compose ps
 curl -f http://localhost:8001/health
@@ -57,8 +57,8 @@ curl -f http://localhost:8001/health
 ## Запуск со звонками и оценкой
 
 ```bash
-docker compose --profile voip --profile ai up -d --build
-docker compose --profile voip --profile ai ps
+docker compose --profile voip --profile silero --profile ai up -d --build
+docker compose --profile voip --profile silero --profile ai ps
 ```
 
 Для локального запуска, включая звонки, откройте **`http://localhost:8001`**, разрешите микрофон и нажмите «Подключить телефон». В режиме 112 выберите сценарий и «Учебный звонок»; в новом режиме ДДС используйте блок «Учебный голосовой разговор» для доклада руководителю бригады, вышестоящему начальнику или другой службе, чей номер указан в полученной карточке. Номер другой службы используется для проверки допустимости контакта, **реальный внешний вызов не совершается**: звонок идёт на внутреннюю учебную линию и записывается. Сейчас линия ДДС произносит вступление и записывает голос обучающегося, но **не формирует ответные реплики**: полноценный двусторонний голосовой диалог ещё не реализован. Браузер разрешает микрофон на `localhost` по HTTP; SIP подключается к локальному Asterisk через WSS-шлюз. На своём компьютере HTTPS и установка сертификата не требуются. HTTPS на 8443 нужен при доступе с другого компьютера по IP или DNS-имени.
@@ -73,7 +73,7 @@ SIP_PUBLIC_ADDRESS=192.168.1.100
 Замените адрес на доступный студентам IP сервера. `ARM_HOST` также может быть DNS-именем; порт и протокол в него не включаются. Перезапустите:
 
 ```bash
-docker compose --profile voip up -d --force-recreate app asterisk turn gateway
+docker compose --profile voip --profile silero up -d --force-recreate app asterisk turn gateway voice-silero
 ```
 
 Адрес интерфейса: `https://192.168.1.100:8443`. Caddy использует локальный центр сертификации. Установите его корневой сертификат в доверенные на компьютере студента, иначе браузер может блокировать SIP/WebSocket:
@@ -104,7 +104,7 @@ docker compose exec -T backup sh /backup.sh
 # Если вы редактировали включённый в Git .env, сохраните свои настройки вне проекта.
 cp .env ../arm112-env.saved
 git pull --ff-only
-docker compose --profile voip --profile ai up -d --build
+docker compose --profile voip --profile silero --profile ai up -d --build
 docker compose ps
 curl http://localhost:8001/health
 ```
@@ -115,12 +115,12 @@ curl http://localhost:8001/health
 
 ```bash
 docker compose logs --tail=100 app
-docker compose --profile voip logs --tail=100 voice asterisk gateway
+docker compose --profile voip --profile silero logs --tail=100 voice-silero asterisk gateway
 docker compose --profile ai logs --tail=100 ml grammar
 # Остановить контейнеры, сохранив данные:
-docker compose --profile voip --profile ai down
+docker compose --profile voip --profile silero --profile ai down
 # Запустить снова:
-docker compose --profile voip --profile ai up -d
+docker compose --profile voip --profile silero --profile ai up -d
 ```
 
 Данные базы, аудио и настройки SIP хранятся в Docker-томах. `docker compose down -v` удаляет тома и данные; для обычной остановки его не используйте.
