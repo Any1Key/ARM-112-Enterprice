@@ -39,6 +39,22 @@ printf '%s\n' "$backup_bundle" > /backups/latest.bundle.partial
 mv /backups/latest.bundle.partial /backups/latest.bundle
 printf '%s\n' "$backup_created" > /backups/last_success
 rm -f /backups/last_error
+if [ "${BACKUP_MIRROR_ENABLED:-0}" = 1 ] && [ -d /mirror ]; then
+    mirror_work=/mirror/.partial_${backup_bundle}
+    rm -rf "$mirror_work"
+    mkdir "$mirror_work"
+    cp -a "/backups/$backup_bundle/." "$mirror_work/"
+    mv "$mirror_work" "/mirror/$backup_bundle"
+    cp -a "/backups/$backup_bundle/database.dump" /mirror/latest.dump.partial
+    mv /mirror/latest.dump.partial /mirror/latest.dump
+    cp -a "/backups/$backup_bundle/manifest.json" /mirror/latest.json.partial
+    mv /mirror/latest.json.partial /mirror/latest.json
+    printf '%s\n' "$backup_bundle" > /mirror/latest.bundle.partial
+    mv /mirror/latest.bundle.partial /mirror/latest.bundle
+    printf '%s\n' "$backup_created" > /mirror/last_success
+    find /mirror -maxdepth 1 -type d -name 'arm112_*' -mtime +180 -exec rm -rf '{}' ';'
+    printf '%s\n' "$backup_bundle" > /backups/last_mirror_bundle
+fi
 backup_ok=1
 # Only remove dated backups after a new complete copy was successfully published.
 find /backups -maxdepth 1 -type f -name 'arm112_*.dump' -mtime +180 -delete

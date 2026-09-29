@@ -1,8 +1,11 @@
 #!/bin/sh
 set -eu
 backup_interval=${BACKUP_INTERVAL_HOURS:-23}
+verify_interval=${VERIFY_BACKUP_INTERVAL_HOURS:-168}
 case "$backup_interval" in ''|*[!0-9]*) echo 'BACKUP_INTERVAL_HOURS must be 1..23' >&2; exit 1;; esac
 [ "$backup_interval" -ge 1 ] && [ "$backup_interval" -le 23 ] || { echo 'BACKUP_INTERVAL_HOURS must be 1..23' >&2; exit 1; }
+case "$verify_interval" in ''|*[!0-9]*) echo 'VERIFY_BACKUP_INTERVAL_HOURS must be a positive integer' >&2; exit 1;; esac
+[ "$verify_interval" -ge 1 ] || { echo 'VERIFY_BACKUP_INTERVAL_HOURS must be at least 1' >&2; exit 1; }
 # A recreated container has no surviving worker from its old PID namespace.
 rm -f /backups/.backup-running
 while :; do
@@ -15,6 +18,10 @@ while :; do
     backup_modified=$(stat -c %Y /backups/latest.json 2>/dev/null || echo 0)
     if [ -f /backups/last_error ] || [ -d /backups/.backup-pending ] || [ "$backup_modified" = 0 ] || [ "$((backup_now-backup_modified))" -ge "$((backup_interval*3600))" ]; then
         /backup.sh || echo 'Backup failed; will retry automatically' >&2
+    fi
+    verify_modified=$(stat -c %Y /backups/last_restore_check.json 2>/dev/null || echo 0)
+    if [ -f /backups/latest.json ] && { [ "$verify_modified" = 0 ] || [ "$((backup_now-verify_modified))" -ge "$((verify_interval*3600))" ]; }; then
+        /verify.sh || echo 'Backup restore drill failed; will retry automatically' >&2
     fi
     sleep 5
 done

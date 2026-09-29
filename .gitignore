@@ -2,6 +2,8 @@ __pycache__/
 .pytest_cache/
 data/runtime/
 backups/
+backups-mirror/*
+!backups-mirror/.gitkeep
 
 .env.local
 .env.*.local

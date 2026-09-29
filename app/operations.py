@@ -89,6 +89,15 @@ def backup_catalog(root=None):
         except (OSError,ValueError,TypeError,KeyError,AttributeError):continue
     return sorted(entries,key=lambda entry:entry['created_at'],reverse=True)
 
+def require_fresh_backup(root=None):
+    """Prevent destructive admin actions until a complete recent backup exists."""
+    snapshot=backup_snapshot(root)
+    if snapshot['status']=='ok': return snapshot
+    target=Path(root or os.getenv('BACKUP_ROOT','/backups'))
+    try:(target/'.backup-pending').mkdir(mode=0o700)
+    except FileExistsError:pass
+    raise HTTPException(409,'Сначала создаётся свежая резервная копия. Повторите операцию после её завершения.')
+
 def register_operations(app,db,current):
     @app.get('/api/operations')
     def operations(u=Depends(current),s=Depends(db)):

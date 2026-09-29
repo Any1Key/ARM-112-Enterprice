@@ -178,6 +178,11 @@ def delete_run_data(s,run_id,remove_recording=True):
     s.query(SessionRun).filter(SessionRun.id==run_id).delete(synchronize_session=False)
 def cleanup_expired():
     if maintenance():return 0
+    from app.operations import backup_snapshot
+    if backup_snapshot()['status']!='ok':
+        try:(Path(os.getenv('BACKUP_ROOT','/backups'))/'.backup-pending').mkdir(mode=0o700)
+        except FileExistsError:pass
+        return 0
     from datetime import timedelta
     cutoff=datetime.now(timezone.utc)-timedelta(days=RETENTION_DAYS)
     with SessionLocal() as s:
@@ -222,6 +227,8 @@ def download_attachment(attachment_id:int,u=Depends(current),s:Session=Depends(d
 @app.delete('/api/cards/{run_id}')
 def delete_card(run_id:int,u=Depends(current),s:Session=Depends(db)):
     if u.role!='admin': raise HTTPException(403)
+    from app.operations import require_fresh_backup
+    require_fresh_backup()
     run=s.get(SessionRun,run_id)
     if not run: raise HTTPException(404)
     delete_run_data(s,run_id);audit(s,u,'card.delete',{'run_id':run_id});return {'status':'deleted','run_id':run_id}

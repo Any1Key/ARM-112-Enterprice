@@ -21,6 +21,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-arm112}
       PGPASSWORD: ${POSTGRES_PASSWORD:-change_me_now}
       BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-23}
+      VERIFY_BACKUP_INTERVAL_HOURS: ${VERIFY_BACKUP_INTERVAL_HOURS:-168}
+      BACKUP_MIRROR_ENABLED: ${BACKUP_MIRROR_ENABLED:-0}
     volumes:
       - ./deploy/backup/backup.sh:/backup.sh:ro
       - ./deploy/backup/start.sh:/start.sh:ro
@@ -33,6 +35,7 @@ services:
       - app_data:/backup-runtime
       - sip_provision:/backup-provision
       - ${BACKUP_DIR:-./backups}:/backups
+      - ${BACKUP_MIRROR_DIR:-./backups-mirror}:/mirror
     command: ["sh", "/start.sh"]
     depends_on:
       db: {condition: service_healthy}
@@ -47,6 +50,11 @@ services:
     image: redis:7-alpine
     command: ["redis-server","--appendonly","yes"]
     volumes: ["redis_data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
   media-seed:
     image: alpine:3.20
@@ -99,6 +107,12 @@ services:
       - call_media:/media
     depends_on:
       media-seed: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD-SHELL", "asterisk -rx 'core show uptime' >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
   turn:
     image: coturn/coturn:4.6.2
@@ -115,6 +129,12 @@ services:
       dockerfile: services/voice-silero/Dockerfile
     profiles: ["silero"]
     volumes: ["call_media:/media"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8092/health', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
   grammar:
     build: ./services/grammar

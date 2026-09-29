@@ -503,6 +503,8 @@ def register_routes(app,db,current,evaluate,pwd):
     @app.delete('/api/users/{user_id}')
     def delete_user(user_id:int,u=Depends(current),s:Session=Depends(db)):
         if u.role!='admin': raise HTTPException(403)
+        from app.operations import require_fresh_backup
+        require_fresh_backup()
         if user_id==u.id: raise HTTPException(409,'Нельзя удалить собственную учётную запись')
         user=s.get(User,user_id)
         if not user: raise HTTPException(404)
