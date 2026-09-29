@@ -131,6 +131,11 @@ async function renderReportInsights(){
     reportInsights.append(el('h2','','Рекомендации преподавателю'),el('p','source-meta',`${data.attempts} попыток · завершено ${data.completed}. ${data.method}`));
     if(!data.recommendations.length)reportInsights.append(el('p','empty-table','Недостаточно завершённых тренировок для рекомендаций.'));
     else {const list=el('ul','result-errors');data.recommendations.forEach(item=>list.append(el('li','',item)));reportInsights.append(list);}
+    if(data.scenario_chart?.length){
+      const chart=el('section','report-insight-section');chart.append(el('h3','','Средний балл по сценариям'));
+      const bars=el('div','report-score-bars');for(const item of data.scenario_chart){const row=el('div','report-score-bar');const label=el('span','',item.scenario);const track=el('div','report-score-track');const fill=el('span','report-score-fill');fill.style.width=`${Math.max(0,Math.min(100,item.average_score||0))}%`;track.append(fill);row.append(label,track,el('b','',item.average_score==null?'—':`${item.average_score} / 100`));bars.append(row);}chart.append(bars);reportInsights.append(chart);
+      const errors=data.frequent_errors||[];if(errors.length){const heat=el('section','report-insight-section');heat.append(el('h3','','Тепловая карта повторяющихся ошибок'));const headers=['Сценарий',...errors.map(item=>item.error)];const max=Math.max(1,...data.scenario_chart.map(item=>Math.max(0,...errors.map(error=>item.errors?.[error.error]||0))));const rows=data.scenario_chart.map(item=>[item.scenario,...errors.map(error=>{const count=item.errors?.[error.error]||0;const cell=el('span','report-insight-cell',count?String(count):'—');cell.title=error.error;cell.style.backgroundColor=count?`rgba(190,64,48,${0.12+0.68*count/max})`:'transparent';return cell;})]);reportTable(heat,headers,rows);reportInsights.append(heat);}
+    }
     reportInsights.hidden=false;
   }catch(error){reportInsights.hidden=true;}
 }

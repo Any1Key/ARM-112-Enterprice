@@ -361,10 +361,11 @@ def report_insights(u=Depends(current),s:Session=Depends(db),started_from:dateti
     scenario_stats={}
     for row in completed:
         report=row['report'] or {}
+        key=row['scenario_title'] or f"Сценарий №{row['scenario_id']}"
+        bucket=scenario_stats.setdefault(key,{'attempts':0,'score_sum':0,'low_scores':0,'errors':{}})
         for error in report.get('errors',[]):
             error_counts[error]=error_counts.get(error,0)+1
-        key=row['scenario_title'] or f"Сценарий №{row['scenario_id']}"
-        bucket=scenario_stats.setdefault(key,{'attempts':0,'score_sum':0,'low_scores':0})
+            bucket['errors'][error]=bucket['errors'].get(error,0)+1
         bucket['attempts']+=1
         if row['score'] is not None:
             bucket['score_sum']+=row['score']
@@ -376,6 +377,11 @@ def report_insights(u=Depends(current),s:Session=Depends(db),started_from:dateti
         if average is not None and (average<80 or bucket['low_scores']):
             weak_scenarios.append({'scenario':title,'attempts':bucket['attempts'],'average_score':average,'low_scores':bucket['low_scores']})
     weak_scenarios.sort(key=lambda item:(item['average_score'],item['scenario']))
+    scenario_chart=[{'scenario':title,'attempts':bucket['attempts'],
+                     'average_score':round(bucket['score_sum']/bucket['attempts'],1) if bucket['attempts'] else None,
+                     'low_scores':bucket['low_scores'],'errors':bucket['errors']}
+                    for title,bucket in scenario_stats.items()]
+    scenario_chart.sort(key=lambda item:(item['average_score'] is None,item['average_score'] if item['average_score'] is not None else 0,item['scenario']))
     recommendations=[]
     for item in frequent[:3]:
         recommendations.append(f"Разберите с группой ошибку «{item['error']}» — повторилась {item['count']} раз.")
@@ -384,6 +390,7 @@ def report_insights(u=Depends(current),s:Session=Depends(db),started_from:dateti
     if not recommendations and completed:
         recommendations.append('Критичных повторяющихся ошибок не выявлено; продолжайте плановую практику.')
     return {'attempts':len(rows),'completed':len(completed),'frequent_errors':frequent,
+            'scenario_chart':scenario_chart[:20],
             'weak_scenarios':weak_scenarios[:5],'recommendations':recommendations[:6],
             'method':'Локальная объяснимая аналитика по результатам и ошибкам; внешние данные не используются.'}
 
