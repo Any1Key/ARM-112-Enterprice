@@ -59,9 +59,10 @@ services:
   media-seed:
     image: alpine:3.20
     volumes:
-      - ./data/service_audio:/seed:ro
+      - ./data/service_audio.tar.gz:/seed/service_audio.tar.gz:ro
+      - ./data/service_audio.tar.gz.sha256:/seed/service_audio.tar.gz.sha256:ro
       - call_media:/media
-    command: ["sh", "-c", "set -eu; for file in /seed/*.wav; do [ -e \"$$file\" ] || continue; name=$${file##*/}; [ -e \"/media/$$name\" ] || cp \"$$file\" \"/media/$$name\"; done"]
+    command: ["sh", "-c", "set -eu; cd /seed; sha256sum -c service_audio.tar.gz.sha256; mkdir -p /tmp/service-audio; tar -xzf /seed/service_audio.tar.gz -C /tmp/service-audio; for file in /tmp/service-audio/*.wav; do [ -e \"$$file\" ] || continue; name=$${file##*/}; [ -e \"/media/$$name\" ] || cp \"$$file\" \"/media/$$name\"; done"]
     restart: "no"
   app:
     build: .
