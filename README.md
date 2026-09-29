@@ -17,11 +17,11 @@
 
 ## Быстрый запуск
 
-Описанная здесь версия находится в репозитории `Any1Key/dds-any1key`. Для первого знакомства достаточно базового запуска без телефонии и голосовых сервисов:
+Описанная здесь версия находится в репозитории `Any1Key/ARM-112-Enterprice`. Для первого знакомства достаточно базового запуска без телефонии и голосовых сервисов:
 
 ```bash
-git clone --branch main --single-branch https://github.com/Any1Key/dds-any1key.git
-cd dds-any1key
+git clone --branch main --single-branch https://github.com/Any1Key/ARM-112-Enterprice.git
+cd ARM-112-Enterprice
 docker compose up -d --build
 docker compose ps
 curl -f http://localhost:8001/health
