@@ -105,8 +105,8 @@
 ### Базовый запуск
 
 ```bash
-git clone https://github.com/Any1Key/dds-any1key.git
-cd dds-any1key
+git clone https://github.com/Any1Key/ARM-112-Enterprice.git
+cd ARM-112-Enterprice
 cp .env.example .env
 # Задайте секреты и адреса до первого запуска
 docker compose up -d --build
@@ -119,11 +119,11 @@ curl -f http://localhost:8001/health
 ### Запуск телефонии и AI
 
 ```bash
-docker compose --profile voip --profile ai up -d --build
-docker compose --profile voip --profile ai ps
+docker compose --profile voip --profile silero --profile ai up -d --build
+docker compose --profile voip --profile silero --profile ai ps
 ```
 
-AI-профиль нужен для Silero/ML/LanguageTool. Генерация сценариев в `AI_MODE=rules` работает без Ollama; запуск Ollama требуется только для необязательных черновиков, если это явно включено конфигурацией.
+Профиль `silero` запускает локальный TTS. Профиль `ai` запускает ML и LanguageTool; Ollama требуется только для необязательных черновиков, если это явно включено конфигурацией. Для полного учебного контура со звонками и оценкой используются все три профиля: `voip`, `silero` и `ai`.
 
 ### HTTPS из локальной сети
 

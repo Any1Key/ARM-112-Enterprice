@@ -3,12 +3,12 @@
 ## Запуск
 
 ```bash
-git clone https://github.com/yaro-s-lav/hacka.git
-cd hacka
-docker compose --profile ai --profile voip up -d --build
+git clone https://github.com/Any1Key/ARM-112-Enterprice.git
+cd ARM-112-Enterprice
+docker compose --profile ai --profile silero --profile voip up -d --build
 ```
 
-Открыть `http://localhost:8000`. Docker скачивает образы и русские голоса при первой сборке; последующие запуски используют локальные данные. Учебные пользователи: `student`, `teacher`, `admin`; пароли соответствуют значениям в `.env`, в опубликованном демо — `student12345`, `teacher12345`, `admin12345`.
+Открыть `http://localhost:8001`. Docker скачивает образы и русские голоса при первой сборке; последующие запуски используют локальные данные. Учебные пользователи: `student`, `teacher`, `admin`; пароли соответствуют значениям в `.env`, в опубликованном демо — `student12345`, `teacher12345`, `admin12345`.
 
 Карточки устанавливаются из каталогов `data/scenarios/practice.json` и `data/scenarios/workflows.json`. Импорт повторяемый, правки преподавателя сохраняются. ЕКП по умолчанию — явно выбранный `046_24`, 1283 типа и 24 группы. Другой XLSX в папке не влияет на запуск; для 90-колоночной редакции есть отдельное сопоставление колонок.
 
@@ -38,7 +38,7 @@ docker compose --profile ai --profile voip up -d --build
 2. Пересоздать компоненты:
 
    ```bash
-   docker compose --profile voip up -d --force-recreate asterisk
+   docker compose --profile voip --profile silero up -d --force-recreate asterisk voice-silero
    docker compose up -d --force-recreate app
    ```
 
