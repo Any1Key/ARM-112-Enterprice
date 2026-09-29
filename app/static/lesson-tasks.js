@@ -19,10 +19,15 @@ function lessonTaskPanel(lesson,location){
  const list=el('ol');
  // In the DDS queue the current card and newly received cards must stay visible first.
  // Keep the original order inside each state so the display remains stable between refreshes.
- const tasks=[...(lesson.tasks||[])];
+ const tasks=(lesson.tasks||[]).map((task,index)=>({...task,_queueOrder:index}));
  if(lesson.mode==='dds'){
   const order={in_progress:0,pending:1,skipped:2,completed:3};
-  tasks.sort((left,right)=>(order[left.status]??4)-(order[right.status]??4));
+  tasks.sort((left,right)=>{
+   const stateDiff=(order[left.status]??4)-(order[right.status]??4);
+   if(stateDiff)return stateDiff;
+   // Incoming pending cards are appended to the queue, so the newest is first.
+   return left.status==='pending' ? right._queueOrder-left._queueOrder : left._queueOrder-right._queueOrder;
+  });
  }
  for(const task of tasks){
   const row=el('li','lesson-task-row');row.dataset.taskStatus=task.status;row.dataset.scenarioId=task.scenario_id;
@@ -105,3 +110,18 @@ renderAssignedLessons=function(){renderAssignedBeforeScenarioStatus();if(state.r
 
 $('scenario-search').removeEventListener('input',renderScenariosBeforeTaskStatus);
 $('scenario-search').addEventListener('input',renderScenarios);
+
+// The active DDS workspace is rendered by dds.js, which is loaded after this file.
+// Move the current card before the previous result when dds.js becomes available.
+const ddsWorkspaceOrderTimer=setInterval(()=>{
+ if(typeof renderDdsWorkspace!=='function'||window.__ddsWorkspaceOrderPatched)return;
+ window.__ddsWorkspaceOrderPatched=true;
+ const renderDdsWorkspaceBase=renderDdsWorkspace;
+ renderDdsWorkspace=function(run){
+  renderDdsWorkspaceBase(run);
+  const target=$('dds-workspace');
+  const current=target?.querySelector('.dds-work-card');
+  if(current&&target.firstElementChild!==current)target.prepend(current);
+ };
+ clearInterval(ddsWorkspaceOrderTimer);
+},0);
