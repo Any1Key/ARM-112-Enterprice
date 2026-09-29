@@ -17,7 +17,14 @@ function lessonTaskPanel(lesson,location){
  detail.addEventListener('toggle',()=>{if(!detail.isConnected)return;if(detail.open)openLessonTasks.add(key);else openLessonTasks.delete(key);});
  detail.append(el('summary','',`Задания занятия · выполнено ${counts.completed}/${counts.total} · пропущено ${counts.skipped} · в работе ${counts.in_progress} · не начато ${counts.pending}`));
  const list=el('ol');
- for(const task of lesson.tasks||[]){
+ // In the DDS queue the current card and newly received cards must stay visible first.
+ // Keep the original order inside each state so the display remains stable between refreshes.
+ const tasks=[...(lesson.tasks||[])];
+ if(lesson.mode==='dds'){
+  const order={in_progress:0,pending:1,skipped:2,completed:3};
+  tasks.sort((left,right)=>(order[left.status]??4)-(order[right.status]??4));
+ }
+ for(const task of tasks){
   const row=el('li','lesson-task-row');row.dataset.taskStatus=task.status;row.dataset.scenarioId=task.scenario_id;
   const title=el('div','lesson-task-copy');title.append(el('b','',task.title));
   if(lesson.mode==='dds'&&lesson.status==='active'&&task.status!=='completed'&&task.elapsed_seconds!=null)title.append(el('small','source-meta',`Время с поступления: ${duration(task.elapsed_seconds)} · таймер идёт в очереди`));
