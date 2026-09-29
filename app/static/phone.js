@@ -6,6 +6,25 @@ let sipUA=null,sipSession=null,sipRun=null,sipIceServers=[];
 const incomingSipSessions=new Map();
 let sipCallId=null,sipAttempt=0,sipStarting=false,sipPollBusy=false;
 let releasePhoneLock=null,lockedPhoneUser=null;
+let incomingModalContactId=null;
+const incomingReject=el('button','secondary','Отклонить вызов');incomingReject.type='button';incomingReject.hidden=true;incomingReject.id='reject-incoming-call';$('call').append(incomingReject);
+function closeIncomingModal(){incomingModalContactId=null;document.body.classList.remove('sip-incoming-modal');const call=$('call');call.removeAttribute('aria-modal');call.removeAttribute('aria-label');incomingReject.hidden=true;show('call',false);}
+async function acceptIncomingModal(){
+  const id=incomingModalContactId;
+  if(id){
+    const accept=$('accept-call');accept.disabled=true;incomingReject.disabled=true;
+    try{const run=await api(`/api/incoming/${id}/accept`,{method:'POST'});switchView('training');await restoreRun(run);await answerIncomingSip(id);closeIncomingModal();if(typeof refreshParallelIncoming==='function')await refreshParallelIncoming();}
+    finally{accept.disabled=false;incomingReject.disabled=false;}
+    return;
+  }
+  if(sipSession&&!sipSession.isEnded()){
+    answerSip();
+    if(state.runId){const run=await api(`/api/runs/${state.runId}`);await restoreRun(run);}
+    closeIncomingModal();
+  }
+}
+incomingReject.addEventListener('click',guarded(async()=>{const id=incomingModalContactId;const session=id?incomingSipSessions.get(String(id)):sipSession;incomingReject.disabled=true;try{if(session&&!session.isEnded())session.terminate();if(id)await api(`/api/incoming/${id}/reject`,{method:'POST'});}finally{closeIncomingModal();incomingReject.disabled=false;}}));
+$('accept-call').addEventListener('click',event=>{if(!document.body.classList.contains('sip-incoming-modal'))return;event.preventDefault();event.stopImmediatePropagation();guarded(acceptIncomingModal)();},true);
 async function lockBrowserPhone(username){
   if(lockedPhoneUser===username||!navigator.locks?.request)return;
   if(releasePhoneLock)releasePhoneLock();
@@ -53,18 +72,18 @@ async function connectSip(){
       incomingSipSessions.set(String(incomingContactId),session);phoneStatus.textContent='Входящий учебный звонок';
       const audio=connection=>connection.addEventListener('track',event=>{if(sipSession!==session)return;remoteAudio.srcObject=event.streams[0];remoteAudio.play().catch(()=>{});});
       session.on('peerconnection',event=>audio(event.peerconnection));
-      session.on('ended',()=>incomingSipSessions.delete(String(incomingContactId)));
-      session.on('failed',()=>incomingSipSessions.delete(String(incomingContactId)));
-      show('call',true);return;
+      session.on('ended',()=>{incomingSipSessions.delete(String(incomingContactId));if(incomingModalContactId===incomingContactId)closeIncomingModal();});
+      session.on('failed',()=>{incomingSipSessions.delete(String(incomingContactId));if(incomingModalContactId===incomingContactId)closeIncomingModal();});
+      incomingModalContactId=incomingContactId;const call=$('call');call.setAttribute('aria-modal','true');call.setAttribute('aria-label','Входящий учебный вызов');$('call-title').textContent='Входящий учебный вызов';$('call-help').textContent='Примите или отклоните звонок, чтобы продолжить работу';$('accept-call').textContent='☎  Принять вызов';incomingReject.hidden=false;document.body.classList.add('sip-incoming-modal');show('call',true);return;
     }
     if(sipUA!==ua||!state.runId||sipRun!==state.runId||(sipSession&&!sipSession.isEnded())){session.terminate();return;}
     sipSession=session;phoneStatus.textContent='Входящий учебный вызов';startPhone.disabled=true;hangupPhone.textContent='Завершить разговор';
     const audio=connection=>connection.addEventListener('track',event=>{if(sipSession!==session)return;remoteAudio.srcObject=event.streams[0];remoteAudio.play().catch(()=>notify('Нажмите принять вызов для воспроизведения звука.'));});
     session.on('peerconnection',event=>audio(event.peerconnection));
     session.on('accepted',()=>{if(sipSession===session)phoneStatus.textContent='Разговор';});
-    const ended=()=>{if(sipSession!==session)return;sipSession=null;startPhone.disabled=false;phoneStatus.textContent='Разговор завершён';};
+    const ended=()=>{if(sipSession!==session)return;sipSession=null;startPhone.disabled=false;phoneStatus.textContent='Разговор завершён';closeIncomingModal();};
     session.on('ended',ended);session.on('failed',event=>{if(sipSession!==session)return;ended();notify('Звонок не состоялся: '+event.cause);connectPhone.disabled=false;});
-    if(session.connection)audio(session.connection);show('call',true);show('incident-form',false);$('accept-call').disabled=false;
+    if(session.connection)audio(session.connection);incomingModalContactId=null;const call=$('call');call.setAttribute('aria-modal','true');call.setAttribute('aria-label','Входящий учебный вызов');$('call-title').textContent='Входящий учебный вызов';$('call-help').textContent='Примите или отклоните звонок, чтобы продолжить работу';$('accept-call').textContent='☎  Принять вызов';incomingReject.hidden=false;document.body.classList.add('sip-incoming-modal');show('call',true);show('incident-form',false);$('accept-call').disabled=false;
   });ua.start();
 }
 async function answerIncomingSip(contactId){
